@@ -6,11 +6,15 @@
     },
     {
       "name": "EntryAbility_desc",
-      "value": "description"
+      "value": "鸿蒙原生研究者Markdown笔记应用"
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "MXNote"
+    },
+    {
+      "name": "distributed_permission_reason",
+      "value": "MXNote 使用分布式同步功能实现跨设备无缝编辑"
     }
   ]
 }

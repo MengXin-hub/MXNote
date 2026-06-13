@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\")",
+      "Read(///HwFs/HMOS_文档\\(默认\\)/HwFs/HMOS_文档\\(默认\\)/Code/MXNote/hvigor/**)",
+      "Bash(node -e \"console.log\\('node ok'\\)\")",
+      "WebSearch"
+    ]
+  }
+}
