@@ -19,7 +19,30 @@
       "WebFetch(domain:deepwiki.com)",
       "Bash(grep -n \"KEYCODE_\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
       "Bash(grep -n \"this\\\\.format\\(\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
-      "Bash(grep -n \"Ctrl\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")"
+      "Bash(grep -n \"Ctrl\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(ls \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\" 2>/dev/null | head -30)",
+      "Read(///HwFs/UserProfile-Download1781320060/note-gen-dev/**)",
+      "Bash(find \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\\\\\\\\src\" -type f -name \"*.ts\" -o -name \"*.tsx\")",
+      "Bash(find \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\\\\\\\\src\\\\\\\\app\\\\\\\\core\\\\\\\\main\\\\\\\\editor\" -name \"*.tsx\" -o -name \"*.ts\")",
+      "Bash(find \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\\\\\\\\src\" -path \"*/stores/*\" -name \"*.ts*\")",
+      "Bash(find \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\\\\\\\\src\" -path \"*/hooks/*\" -name \"*.ts*\")",
+      "Bash(find \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\\\\\\\\src\" -path \"*/config/*\" -name \"*.ts\")",
+      "Bash(find \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\\\\\\\\src\" -name \"editor-shortcut*\" -o -name \"toolbar-shortcut*\")",
+      "Bash(默认)",
+      "Bash(\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\\\\\")",
+      "Bash(echo \"行数: $\\(wc -l < \\\\\"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\\\\\"\\)\")",
+      "Bash(grep -c \"= {\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(grep \"^import\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "WebFetch(domain:gitee.com)",
+      "Bash(cd \"C:\\\\\\\\HarmonyOS\\\\\\\\mengxin\\\\\\\\下载\\\\\\\\note-gen-dev\\\\\\\\note-gen-dev\")",
+      "Bash(xargs grep -l \"Keyboard\\\\|shortcut\\\\|keydown\\\\|handleKeyDown\\\\|Mod+\")",
+      "Read(//tmp/notes1.0.4/src/main/**)",
+      "Read(//tmp/notes1.0.4/src/main/ets/**)",
+      "Read(//tmp/**)",
+      "Bash(echo \"=== 工程结构 ===\" && find \"C:\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\" -name \"*.ets\" | sort && echo \"\" && echo \"=== 资源 ===\" && find \"C:\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\resources\" -name \"*.json\" | sort)",
+      "Read(//c/HwFs/HMOS_文档\\(默认\\)/Code/MXNote/entry/src/main/**)",
+      "Skill(design-consultation)",
+      "Skill(design-consultation:*)"
     ]
   }
 }
