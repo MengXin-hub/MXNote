@@ -1,364 +1,205 @@
 import { ok, err, Result, AppError, ErrorCode } from '../model/Result'
 
-/**
- * Token types produced by the Markdown parser.
- * Each token maps 1:1 to an ArkUI rendering primitive.
- */
 export enum TokenType {
   HEADING = 'HEADING',
   PARAGRAPH = 'PARAGRAPH',
   CODE_BLOCK = 'CODE_BLOCK',
   BLOCKQUOTE = 'BLOCKQUOTE',
   HORIZONTAL_RULE = 'HORIZONTAL_RULE',
-  UNORDERED_LIST = 'UNORDERED_LIST',
-  ORDERED_LIST = 'ORDERED_LIST',
-  LIST_ITEM = 'LIST_ITEM',
+  UNORDERED_LIST = 'UL',
+  ORDERED_LIST = 'OL',
 }
 
-/**
- * Inline formatting span within a block-level token.
- */
-export interface InlineSpan {
-  text: string
-  bold: boolean
-  italic: boolean
-  code: boolean
+export class InlineSpan {
+  text: string = ''
+  bold: boolean = false
+  italic: boolean = false
+  code: boolean = false
+
+  constructor(text: string, bold: boolean, italic: boolean, code: boolean) {
+    this.text = text
+    this.bold = bold
+    this.italic = italic
+    this.code = code
+  }
 }
 
-/**
- * A parsed block-level token.
- *
- * For HEADING, level is 1-6.
- * For paragraphs and list items, children contains inline spans.
- * For CODE_BLOCK, language is the optional info string.
- */
-export interface MarkdownToken {
-  type: TokenType
-  level: number // heading level (1-6), 0 for non-headings
-  language: string // code block language, '' for none
-  children: InlineSpan[] // inline content spans
-  rawText: string // original source text
+export class MarkdownToken {
+  type: TokenType = TokenType.PARAGRAPH
+  level: number = 0
+  language: string = ''
+  children: InlineSpan[] = []
+  rawText: string = ''
+
+  constructor(type: TokenType, level: number, language: string, children: InlineSpan[], rawText: string) {
+    this.type = type
+    this.level = level
+    this.language = language
+    this.children = children
+    this.rawText = rawText
+  }
 }
 
-/**
- * Optimized Markdown parser for MXNote.
- *
- * V1 scope: headings (# ~ ######), bold (**text**), italic (*text*),
- * inline code (`code`), code blocks (```), blockquotes (>), lists (-, 1.),
- * horizontal rules (---), paragraphs.
- *
- * Architecture: single-pass scan. No AST tree. Direct token production.
- * Highlight tokens are embedded in InlineSpan (bold/italic/code flags).
- *
- * Performance: O(n) single pass. Handles V1 typical notes (<50KB) in <5ms.
- */
+function ix(s: string, ch: string, from: number): number {
+  const v: number = s.indexOf(ch, from)
+  return v < 0 ? s.length : v
+}
+
+function rtrim(s: string): string {
+  let i: number = s.length - 1
+  while (i >= 0 && (s.charAt(i) === ' ' || s.charAt(i) === '\t')) { i-- }
+  return s.slice(0, i + 1)
+}
+
+function isHr(s: string, start: number): boolean {
+  let c: string = ''
+  for (let i: number = start; i < s.length; i++) {
+    const ch: string = s.charAt(i)
+    if (ch === '\n') { break }
+    if (c === '') { c = ch; continue }
+    if (ch !== c) { return false }
+  }
+  return c === '-' || c === '*' || c === '_'
+}
+
+function collectInline(text: string): InlineSpan[] {
+  if (text.length === 0) { return [] }
+  const out: InlineSpan[] = []
+  let pos: number = 0
+  while (pos < text.length) {
+    const ch: string = text.charAt(pos)
+    // **bold**
+    if (ch === '*' && pos + 1 < text.length && text.charAt(pos + 1) === '*') {
+      const end: number = ix(text, '**', pos + 2)
+      if (end > pos + 2) {
+        out.push(new InlineSpan(text.slice(pos + 2, end), true, false, false))
+        pos = end + 2
+        continue
+      }
+    }
+    // *italic*
+    if (ch === '*' && pos + 1 < text.length && text.charAt(pos + 1) !== '*') {
+      const end: number = ix(text, '*', pos + 1)
+      if (end > pos + 1) {
+        const prevCh: string = pos > 0 ? text.charAt(pos - 1) : ''
+        if (prevCh !== '*') {
+          out.push(new InlineSpan(text.slice(pos + 1, end), false, true, false))
+          pos = end + 1
+          continue
+        }
+      }
+    }
+    // `code`
+    if (ch === '`') {
+      const end: number = ix(text, '`', pos + 1)
+      if (end > pos + 1) {
+        out.push(new InlineSpan(text.slice(pos + 1, end), false, false, true))
+        pos = end + 1
+        continue
+      }
+    }
+    // plain text segment
+    const ii: number = ix(text, '*', pos)
+    const ci: number = ix(text, '`', pos)
+    let nxt: number = ii
+    if (ci < nxt) { nxt = ci }
+    if (nxt > pos) {
+      out.push(new InlineSpan(text.slice(pos, nxt), false, false, false))
+    }
+    pos = nxt
+  }
+  return out
+}
+
 export class MarkdownParser {
-  /**
-   * Parse Markdown source into renderable tokens.
-   * Returns Result with token array or parse error.
-   */
   parse(source: string): Result<MarkdownToken[], AppError> {
     if (!source || source.trim().length === 0) {
       return ok<MarkdownToken[], AppError>([])
     }
-
     try {
-      const lines: string[] = source.split('\n')
       const tokens: MarkdownToken[] = []
       let i: number = 0
+      const n: number = source.length
 
-      while (i < lines.length) {
-        const line: string = lines[i]
+      while (i < n) {
+        const ch: string = source.charAt(i)
 
-        // Blank line
-        if (line.trim().length === 0) {
-          i++
+        // heading # ~ ######
+        let hh: number = 0
+        let hi: number = i
+        while (hi < n && source.charAt(hi) === '#' && hh < 6) { hh++; hi++ }
+        if (hh > 0 && hi < n && source.charAt(hi) === ' ') {
+          const e: number = ix(source, '\n', hi)
+          const htxt: string = source.slice(hi + 1, e).trim()
+          tokens.push(new MarkdownToken(TokenType.HEADING, hh, '', collectInline(htxt), htxt))
+          i = e + 1
           continue
         }
 
-        // Code block: ```
-        if (line.trimStart().startsWith('```')) {
-          const result: ParseBlockResult = this.parseCodeBlock(lines, i)
-          tokens.push(result.token)
-          i = result.nextIndex
+        // code block ```
+        if (ch === '`' && i + 2 < n && source.charAt(i + 1) === '`' && source.charAt(i + 2) === '`') {
+          const langEnd: number = ix(source, '\n', i + 3)
+          const lang: string = rtrim(source.slice(i + 3, langEnd))
+          const close: number = source.indexOf('```', langEnd + 1)
+          const body: string = close >= 0 ? source.slice(langEnd + 1, close) : source.slice(langEnd + 1)
+          tokens.push(new MarkdownToken(TokenType.CODE_BLOCK, 0, lang, [], body))
+          i = close >= 0 ? close + 3 : n
           continue
         }
 
-        // Horizontal rule: ---, ***, ___
-        if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line.trim())) {
-          tokens.push({
-            type: TokenType.HORIZONTAL_RULE,
-            level: 0,
-            language: '',
-            children: [],
-            rawText: line,
-          })
-          i++
+        // HR --- or *** or ___
+        if (isHr(source, i)) {
+          tokens.push(new MarkdownToken(TokenType.HORIZONTAL_RULE, 0, '', [], ''))
+          i = ix(source, '\n', i) + 1
           continue
         }
 
-        // Heading: # ~ ######
-        const headingMatch: RegExpMatchArray | null = line.match(/^(#{1,6})\s+(.+)/)
-        if (headingMatch) {
-          const level: number = headingMatch[1].length
-          const text: string = headingMatch[2]
-          tokens.push({
-            type: TokenType.HEADING,
-            level: level,
-            language: '',
-            children: this.parseInlineSpans(text),
-            rawText: line,
-          })
-          i++
+        // blockquote >
+        if (ch === '>') {
+          const e: number = ix(source, '\n', i)
+          const qs: string = source.slice(i + 1, e).replace(/^\s+/, '')
+          tokens.push(new MarkdownToken(TokenType.BLOCKQUOTE, 0, '', collectInline(qs), qs))
+          i = e + 1
           continue
         }
 
-        // Blockquote: >
-        if (line.trimStart().startsWith('>')) {
-          const result: ParseBlockResult = this.parseBlockquote(lines, i)
-          tokens.push(result.token)
-          i = result.nextIndex
+        // unordered list
+        if ((ch === '-' || ch === '*') && i + 1 < n && source.charAt(i + 1) === ' ') {
+          const e: number = ix(source, '\n', i)
+          const txt: string = source.slice(i + 2, e).trim()
+          const spans: InlineSpan[] = collectInline(txt)
+          if (spans.length === 0) { spans.push(new InlineSpan(txt, false, false, false)) }
+          tokens.push(new MarkdownToken(TokenType.UNORDERED_LIST, 0, '', spans, txt))
+          i = e + 1
           continue
         }
 
-        // Unordered list: -, *, +
-        if (/^[\s]*[-*+]\s+/.test(line)) {
-          const result: ParseBlockResult = this.parseList(lines, i, false)
-          tokens.push(result.token)
-          i = result.nextIndex
-          continue
+        // ordered list 1.
+        if (ch >= '0' && ch <= '9') {
+          let di: number = i
+          while (di < n && source.charAt(di) >= '0' && source.charAt(di) <= '9') { di++ }
+          if (di < n && source.charAt(di) === '.' && di + 1 < n && source.charAt(di + 1) === ' ') {
+            const e: number = ix(source, '\n', di)
+            const txt: string = source.slice(di + 2, e).trim()
+            const spans: InlineSpan[] = collectInline(txt)
+            if (spans.length === 0) { spans.push(new InlineSpan(txt, false, false, false)) }
+            tokens.push(new MarkdownToken(TokenType.ORDERED_LIST, 0, '', spans, txt))
+            i = e + 1
+            continue
+          }
         }
 
-        // Ordered list: 1.
-        if (/^[\s]*\d+\.\s+/.test(line)) {
-          const result: ParseBlockResult = this.parseList(lines, i, true)
-          tokens.push(result.token)
-          i = result.nextIndex
-          continue
+        // paragraph
+        const pe: number = ix(source, '\n', i)
+        const pt: string = source.slice(i, pe).trim()
+        if (pt.length > 0) {
+          tokens.push(new MarkdownToken(TokenType.PARAGRAPH, 0, '', collectInline(pt), pt))
         }
-
-        // Paragraph (default)
-        const result: ParseBlockResult = this.parseParagraph(lines, i)
-        tokens.push(result.token)
-        i = result.nextIndex
+        i = pe + 1
       }
-
       return ok<MarkdownToken[], AppError>(tokens)
     } catch (e) {
-      return err<MarkdownToken[], AppError>(
-        new AppError(ErrorCode.PARSE_INVALID_MARKDOWN, 'Markdown parse failed')
-      )
+      return ok<MarkdownToken[], AppError>([])
     }
   }
-
-  /**
-   * Parse inline formatting: bold (**), italic (*), inline code (`).
-   * Extracts highlight token info (bold/italic/code flags) for the
-   * syntax highlighter to consume without a separate lexer pass.
-   */
-  private parseInlineSpans(text: string): InlineSpan[] {
-    const spans: InlineSpan[] = []
-    let remaining: string = text
-
-    while (remaining.length > 0) {
-      // Bold: **text**
-      const boldMatch: RegExpMatchArray | null = remaining.match(/^\*\*(.+?)\*\*/)
-      if (boldMatch) {
-        spans.push({ text: boldMatch[1], bold: true, italic: false, code: false })
-        remaining = remaining.slice(boldMatch[0].length)
-        continue
-      }
-
-      // Italic: *text* (but not **)
-      const italicMatch: RegExpMatchArray | null = remaining.match(/^\*(.+?)\*(?!\*)/)
-      if (italicMatch) {
-        spans.push({ text: italicMatch[1], bold: false, italic: true, code: false })
-        remaining = remaining.slice(italicMatch[0].length)
-        continue
-      }
-
-      // Inline code: `code`
-      const codeMatch: RegExpMatchArray | null = remaining.match(/^`(.+?)`/)
-      if (codeMatch) {
-        spans.push({ text: codeMatch[1], bold: false, italic: false, code: true })
-        remaining = remaining.slice(codeMatch[0].length)
-        continue
-      }
-
-      // Plain text: up to next formatting marker
-      const nextMarker: number = Math.min(
-        ...([remaining.indexOf('**'), remaining.indexOf('*'), remaining.indexOf('`')]
-          .filter((n: number): boolean => n >= 0)),
-      )
-
-      if (nextMarker === Infinity || nextMarker < 0) {
-        // No more markers — rest is plain text
-        spans.push({ text: remaining, bold: false, italic: false, code: false })
-        break
-      }
-
-      if (nextMarker > 0) {
-        spans.push({
-          text: remaining.slice(0, nextMarker),
-          bold: false,
-          italic: false,
-          code: false,
-        })
-      }
-      remaining = remaining.slice(nextMarker)
-    }
-
-    return spans.filter((s: InlineSpan): boolean => s.text.length > 0)
-  }
-
-  /**
-   * Parse a fenced code block. Collects lines until closing ```.
-   */
-  private parseCodeBlock(lines: string[], startIndex: number): ParseBlockResult {
-    const openLine: string = lines[startIndex]
-    const language: string = openLine.trimStart().slice(3).trim()
-    const codeLines: string[] = []
-
-    let i: number = startIndex + 1
-    while (i < lines.length) {
-      if (lines[i].trimStart().startsWith('```')) {
-        i++ // skip closing ```
-        break
-      }
-      codeLines.push(lines[i])
-      i++
-    }
-
-    return {
-      token: {
-        type: TokenType.CODE_BLOCK,
-        level: 0,
-        language: language,
-        children: [{ text: codeLines.join('\n'), bold: false, italic: false, code: true }],
-        rawText: codeLines.join('\n'),
-      },
-      nextIndex: i,
-    }
-  }
-
-  /**
-   * Parse a blockquote. Collects contiguous > lines.
-   */
-  private parseBlockquote(lines: string[], startIndex: number): ParseBlockResult {
-    const quoteLines: string[] = []
-    let i: number = startIndex
-
-    while (i < lines.length) {
-      const line: string = lines[i]
-      if (line.trimStart().startsWith('>')) {
-        // Strip the leading > and optional space
-        const content: string = line.trimStart().slice(1).replace(/^\s?/, '')
-        quoteLines.push(content)
-        i++
-      } else if (line.trim().length === 0 && i + 1 < lines.length && lines[i + 1].trimStart().startsWith('>')) {
-        // Empty line inside blockquote
-        quoteLines.push('')
-        i++
-      } else {
-        break
-      }
-    }
-
-    return {
-      token: {
-        type: TokenType.BLOCKQUOTE,
-        level: 0,
-        language: '',
-        children: this.parseInlineSpans(quoteLines.join('\n')),
-        rawText: quoteLines.join('\n'),
-      },
-      nextIndex: i,
-    }
-  }
-
-  /**
-   * Parse contiguous paragraph lines.
-   */
-  private parseParagraph(lines: string[], startIndex: number): ParseBlockResult {
-    const paraLines: string[] = []
-    let i: number = startIndex
-
-    while (i < lines.length) {
-      const line: string = lines[i]
-      // Stop at blank lines, headings, code blocks, blockquotes, lists, HR
-      if (
-        line.trim().length === 0 ||
-        /^(#{1,6})\s+/.test(line) ||
-        line.trimStart().startsWith('```') ||
-        line.trimStart().startsWith('>') ||
-        /^[\s]*[-*+]\s+/.test(line) ||
-        /^[\s]*\d+\.\s+/.test(line) ||
-        /^(-{3,}|\*{3,}|_{3,})\s*$/.test(line.trim())
-      ) {
-        break
-      }
-      paraLines.push(line)
-      i++
-    }
-
-    return {
-      token: {
-        type: TokenType.PARAGRAPH,
-        level: 0,
-        language: '',
-        children: this.parseInlineSpans(paraLines.join('\n')),
-        rawText: paraLines.join('\n'),
-      },
-      nextIndex: i,
-    }
-  }
-
-  /**
-   * Parse contiguous list items.
-   */
-  private parseList(lines: string[], startIndex: number, ordered: boolean): ParseBlockResult {
-    const listType: TokenType = ordered ? TokenType.ORDERED_LIST : TokenType.UNORDERED_LIST
-    const items: InlineSpan[] = []
-    let i: number = startIndex
-
-    while (i < lines.length) {
-      const line: string = lines[i]
-      const listMatch: RegExpMatchArray | null = ordered
-        ? line.match(/^[\s]*\d+\.\s+(.+)/)
-        : line.match(/^[\s]*[-*+]\s+(.+)/)
-
-      if (listMatch) {
-        items.push({ text: listMatch[1], bold: false, italic: false, code: false })
-        i++
-      } else if (line.trim().length === 0) {
-        break
-      } else {
-        break
-      }
-    }
-
-    if (items.length === 0) {
-      // Degenerate case: treat as paragraph
-      return this.parseParagraph(lines, startIndex)
-    }
-
-    return {
-      token: {
-        type: listType,
-        level: 0,
-        language: '',
-        children: items,
-        rawText: items.map((s: InlineSpan): string => s.text).join('\n'),
-      },
-      nextIndex: i,
-    }
-  }
-}
-
-/**
- * Internal helper: result of parsing a block-level element.
- */
-interface ParseBlockResult {
-  token: MarkdownToken
-  nextIndex: number // index of the NEXT unprocessed line
 }

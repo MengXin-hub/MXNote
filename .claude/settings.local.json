@@ -4,7 +4,22 @@
       "Bash(cd \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\")",
       "Read(///HwFs/HMOS_文档\\(默认\\)/HwFs/HMOS_文档\\(默认\\)/Code/MXNote/hvigor/**)",
       "Bash(node -e \"console.log\\('node ok'\\)\")",
-      "WebSearch"
+      "WebSearch",
+      "Read(//c/Users/OseasyVM/Pictures/Screenshots/**)",
+      "Bash(wc -l \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(cat \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\resources\\\\\\\\base\\\\\\\\profile\\\\\\\\main_pages.json\")",
+      "Bash(grep \"loadContent\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\entryability\\\\\\\\EntryAbility.ets\")",
+      "Bash(wc -l \"\\\\\\\\HwFs\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(head -1 \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(grep -n \"onTextSelectionChange\\\\|selStart\\\\|selEnd\\\\|onSelectionChange\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(grep -n \"onKeyPreIme\\\\|handleKeyPreIme\\\\|getModifierKeyState\\\\|KEYCODE_\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(grep -n \"formatSelection\\\\|FmtBtn\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(grep -n \"KEYCODE_\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(grep -n \"this\\\\.format\\(\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")",
+      "Bash(grep -n \"Ctrl\" \"\\\\\\\\HwFs\\\\\\\\HMOS_文档\\(默认\\)\\\\\\\\Code\\\\\\\\MXNote\\\\\\\\entry\\\\\\\\src\\\\\\\\main\\\\\\\\ets\\\\\\\\pages\\\\\\\\Index.ets\")"
     ]
   }
 }

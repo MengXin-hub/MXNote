@@ -1,729 +1,660 @@
+import { KeyCode } from '@kit.InputKit'
 import { FileManager } from '../core/FileManager'
 import { NoteFile, formatTime } from '../model/NoteFile'
 import { MarkdownParser, MarkdownToken, TokenType, InlineSpan } from '../core/MarkdownParser'
 
-enum BlockType {
-  PARAGRAPH = 'paragraph',
-  HEADING_1 = 'heading1',
-  HEADING_2 = 'heading2',
-  HEADING_3 = 'heading3',
-  HEADING_4 = 'heading4',
-  CODE = 'code',
-  QUOTE = 'quote',
-  UNORDERED_LIST = 'unordered_list',
-  ORDERED_LIST = 'ordered_list',
-}
-
-class EditorBlock {
-  id: string = ''
-  blockType: BlockType = BlockType.PARAGRAPH
-  content: string = ''
-  language: string = ''
-  headingLevel: number = 0
-
-  constructor(
-    id: string,
-    blockType: BlockType,
-    content: string,
-    language: string,
-    headingLevel: number,
-  ) {
-    this.id = id
-    this.blockType = blockType
-    this.content = content
-    this.language = language
-    this.headingLevel = headingLevel
-  }
-
-  toMarkdown(): string {
-    switch (this.blockType) {
-      case BlockType.HEADING_1:
-        return '# ' + this.content
-      case BlockType.HEADING_2:
-        return '## ' + this.content
-      case BlockType.HEADING_3:
-        return '### ' + this.content
-      case BlockType.HEADING_4:
-        return '#### ' + this.content
-      case BlockType.CODE:
-        if (this.language) {
-          return '```' + this.language + '\n' + this.content + '\n```'
-        }
-        return '```\n' + this.content + '\n```'
-      case BlockType.QUOTE:
-        if (!this.content) {
-          return '> '
-        }
-        return this.content.split('\n')
-          .map((line: string): string => '> ' + line)
-          .join('\n')
-      case BlockType.UNORDERED_LIST:
-        if (!this.content) {
-          return '- '
-        }
-        return this.content.split('\n')
-          .map((line: string): string => '- ' + line)
-          .join('\n')
-      case BlockType.ORDERED_LIST:
-        if (!this.content) {
-          return '1. '
-        }
-        let idx: number = 1
-        return this.content.split('\n')
-          .map((line: string): string => {
-            const r: string = String(idx) + '. ' + line
-            idx = idx + 1
-            return r
-          })
-          .join('\n')
-      default:
-        return this.content
-    }
-  }
-
-  typeLabel(): string {
-    switch (this.blockType) {
-      case BlockType.HEADING_1:
-        return 'H1'
-      case BlockType.HEADING_2:
-        return 'H2'
-      case BlockType.HEADING_3:
-        return 'H3'
-      case BlockType.HEADING_4:
-        return 'H4'
-      case BlockType.CODE:
-        return '</>'
-      case BlockType.QUOTE:
-        return '"'
-      case BlockType.UNORDERED_LIST:
-        return '•'
-      case BlockType.ORDERED_LIST:
-        return '1.'
-      default:
-        return '¶'
-    }
-  }
-}
-
-function blockId(): string {
-  return 'b_' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36)
-}
-
 /**
- * 将 Markdown 文本按块类型拆分，返回原始内容（去除标记符）。
+ * MXNote — 三面板 Markdown 编辑器。
+ *
+ * 可靠实现策略:
+ *   键盘快捷键: onKeyEvent + event.keyCode 直接比对 (不依赖 metaKey)
+ *   文本选区:    TextAreaController 管理光标/选区, 格式按钮在选区位置操作
+ *   格式化:      有选区 → 语法包裹 | 无选区 → 光标处插入模板
  */
-function parseContentToBlocks(markdown: string): EditorBlock[] {
-  if (!markdown || markdown.trim().length === 0) {
-    return [new EditorBlock(blockId(), BlockType.PARAGRAPH, '', '', 0)]
-  }
-  const rawBlocks: string[] = markdown.split('\n\n')
-  const result: EditorBlock[] = []
-  for (let i: number = 0; i < rawBlocks.length; i++) {
-    const chunk: string = rawBlocks[i]
-    if (chunk.trim().length === 0) {
-      continue
-    }
-    result.push(detectBlockType(chunk))
-  }
-  if (result.length === 0) {
-    result.push(new EditorBlock(blockId(), BlockType.PARAGRAPH, '', '', 0))
-  }
-  return result
+
+class EditSnapshot {
+  content: string = ''
+  constructor(content: string) { this.content = content }
 }
-
-function detectBlockType(chunk: string): EditorBlock {
-  const text: string = chunk.trim()
-
-  // heading
-  const hMatch: RegExpMatchArray | null = text.match(/^(#{1,4})\s+(.+)/s)
-  if (hMatch) {
-    const level: number = hMatch[1].length
-    let bType: BlockType
-    if (level === 1) {
-      bType = BlockType.HEADING_1
-    } else if (level === 2) {
-      bType = BlockType.HEADING_2
-    } else if (level === 3) {
-      bType = BlockType.HEADING_3
-    } else {
-      bType = BlockType.HEADING_4
-    }
-    return new EditorBlock(blockId(), bType, hMatch[2].trim(), '', level)
-  }
-
-  // code block
-  if (text.startsWith('```')) {
-    const lines: string[] = text.split('\n')
-    const lang: string = lines[0].slice(3).trim()
-    let endIdx: number = -1
-    for (let j: number = 1; j < lines.length; j++) {
-      if (lines[j].trim() === '```') {
-        endIdx = j
-        break
-      }
-    }
-    const content: string = endIdx > 1 ? lines.slice(1, endIdx).join('\n') : lines.slice(1).join('\n')
-    return new EditorBlock(blockId(), BlockType.CODE, content, lang, 0)
-  }
-
-  // quote
-  if (text.startsWith('>')) {
-    const content: string = text.split('\n')
-      .map((line: string): string => line.replace(/^>\s?/, ''))
-      .join('\n')
-    return new EditorBlock(blockId(), BlockType.QUOTE, content, '', 0)
-  }
-
-  // lists
-  const lines: string[] = text.split('\n')
-  if (lines.length > 0 && /^[\s]*[-*+]\s+/.test(lines[0])) {
-    const content: string = lines
-      .map((line: string): string => line.replace(/^[\s]*[-*+]\s+/, ''))
-      .join('\n')
-    return new EditorBlock(blockId(), BlockType.UNORDERED_LIST, content, '', 0)
-  }
-  if (lines.length > 0 && /^[\s]*\d+\.\s+/.test(lines[0])) {
-    let itemIdx: number = 1
-    const content: string = lines
-      .map((line: string): string => {
-        const replaced: string = line.replace(/^[\s]*\d+\.\s+/, '')
-        itemIdx = itemIdx + 1
-        return replaced
-      })
-      .join('\n')
-    return new EditorBlock(blockId(), BlockType.ORDERED_LIST, content, '', 0)
-  }
-
-  return new EditorBlock(blockId(), BlockType.PARAGRAPH, text, '', 0)
-}
-
-// ─── component ─────────────────────────────────────────
 
 @Entry
 @Component
 struct Index {
-  @State noteId: string = ''
-  @State noteTitle: string = ''
-  @State blocks: EditorBlock[] = []
-  @State statusText: string = '就绪'
-  @State modifiedAt: number = 0
+  // ─── 文件 ──────────────────────────────────────
+  @State noteList: NoteFile[] = []
+  @State searchQuery: string = ''
+  @State filteredList: NoteFile[] = []
+  @State activeNoteId: string = ''
+  @State activeTitle: string = ''
+  @State activeContent: string = ''
   @State createdAt: number = 0
-  @State showTypeMenu: boolean = false
-  @State typeMenuBlockId: string = ''
-  @State showTitleEdit: boolean = false
-  @State editTitle: string = ''
+  @State modifiedAt: number = 0
+  @State listLoading: boolean = true
 
-  private fileManager: FileManager | null = null
+  // ─── 编辑器 ────────────────────────────────────
+  @State editorContent: string = ''
+  @State previewTokens: MarkdownToken[] = []
+  @State wordCount: number = 0
+  private textAreaController: TextAreaController = new TextAreaController()
+
+  // ─── UI ────────────────────────────────────────
+  @State showSidebar: boolean = true
+  @State showPreview: boolean = false
+  @State statusMsg: string = ''
+  @State showNewDialog: boolean = false
+  @State showRenameDialog: boolean = false
+  @State showDeleteConfirm: boolean = false
+  @State showShortcuts: boolean = false
+
+  private fm: FileManager | null = null
   private parser: MarkdownParser = new MarkdownParser()
+  private undoStack: EditSnapshot[] = []
+  private redoStack: EditSnapshot[] = []
+
+  // 弹窗临时变量
+  private tmpNewName: string = ''
+  private tmpRenameText: string = ''
+  private deleteTarget: NoteFile | null = null
+  private renameTarget: NoteFile | null = null
 
   aboutToAppear(): void {
     const uiCtx: UIContext | undefined = this.getUIContext()
     const ctx: Context | undefined = uiCtx ? uiCtx.getHostContext() : undefined
-    if (!ctx) {
-      this.statusText = '初始化失败'
-      return
-    }
-    this.fileManager = new FileManager(ctx)
+    if (ctx) { this.fm = new FileManager(ctx); this.loadList() }
+  }
+  onPageShow(): void { this.loadList() }
 
-    let rawParams: Object | undefined
-    try {
-      const routerInstance = uiCtx.getRouter()
-      rawParams = routerInstance.getParams()
-    } catch (e) {
-      rawParams = undefined
+  // ══════════════════════════════════════════════════
+  // 数据
+  // ══════════════════════════════════════════════════
+
+  async loadList(): Promise<void> {
+    const m: FileManager | null = this.fm
+    if (!m) { return }
+    this.listLoading = true
+    await m.init()
+    const r = await m.listFiles()
+    if (r.isOk() && r.getValue()) { this.noteList = r.getValue()!; this.applySearch() }
+    this.listLoading = false
+  }
+  applySearch(): void {
+    const q: string = this.searchQuery.trim().toLowerCase()
+    if (!q) { this.filteredList = this.noteList; return }
+    const out: NoteFile[] = []
+    for (let i: number = 0; i < this.noteList.length; i++) {
+      if (this.noteList[i].title.toLowerCase().indexOf(q) >= 0) { out.push(this.noteList[i]) }
     }
-    if (rawParams) {
-      const params: Record<string, Object> = rawParams as Record<string, Object>
-      const rawId: Object | undefined = params['noteId']
-      if (rawId) {
-        this.noteId = rawId as string
-      }
+    this.filteredList = out
+  }
+  onSearch(v: string): void { this.searchQuery = v; this.applySearch() }
+
+  async openNote(f: NoteFile): Promise<void> {
+    const m: FileManager | null = this.fm
+    if (!m) { return }
+    const r = await m.readFile(f.id)
+    if (r.isOk() && r.getValue()) {
+      const d: NoteFile = r.getValue()!
+      this.activeNoteId = d.id; this.activeTitle = d.title
+      this.activeContent = d.content
+      this.createdAt = d.createdAt; this.modifiedAt = d.modifiedAt
+      this.setEditorContent(d.content)
+      this.undoStack = []; this.redoStack = []
     }
-    this.loadNote()
   }
 
-  async loadNote(): Promise<void> {
-    const fm: FileManager | null = this.fileManager
-    if (!fm) {
-      return
-    }
-    await fm.init()
+  // ══════════════════════════════════════════════════
+  // 编辑器核心
+  // ══════════════════════════════════════════════════
 
-    if (this.noteId) {
-      const result = await fm.readFile(this.noteId)
-      if (result.isOk()) {
-        const file: NoteFile | null = result.getValue()
-        if (file) {
-          this.noteTitle = file.title
-          this.createdAt = file.createdAt
-          this.modifiedAt = file.modifiedAt
-          this.blocks = parseContentToBlocks(file.content)
-          this.statusText = '已加载'
-        }
-      }
+  private setEditorContent(content: string): void {
+    this.editorContent = content
+    this.wordCount = content.length
+    if (this.showPreview) { this.doParse() }
+  }
+
+  /**
+   * 在指定位置插入文本。
+   * @param pos 插入位置（字符偏移）
+   * @param text 插入的文本
+   */
+  private insertAt(pos: number, text: string): void {
+    this.pushUndo()
+    const c: string = this.editorContent
+    const newContent: string = c.slice(0, pos) + text + c.slice(pos)
+    this.editorContent = newContent
+    this.wordCount = newContent.length
+    // 移动光标到插入文本末尾
+    this.textAreaController.caretPosition(pos + text.length)
+    if (this.showPreview) { this.doParse() }
+  }
+
+  /**
+   * 在指定位置用 Markdown 语法包裹。
+   * @param start 选区起点
+   * @param end   选区终点
+   * @param before 前置语法
+   * @param after  后置语法
+   * @param placeholder 无选区时的占位文本
+   */
+  private wrap(start: number, end: number, before: string, after: string, placeholder: string): void {
+    this.pushUndo()
+    const c: string = this.editorContent
+
+    if (start >= 0 && end > start && start < c.length && end <= c.length) {
+      // 有选区：用语法包裹
+      const sel: string = c.slice(start, end)
+      const wrapped: string = before + sel + after
+      this.editorContent = c.slice(0, start) + wrapped + c.slice(end)
+      this.wordCount = this.editorContent.length
+      // 光标移到包裹语法后
+      this.textAreaController.caretPosition(start + wrapped.length)
     } else {
-      this.noteTitle = '未命名笔记'
-      this.createdAt = Date.now()
-      this.modifiedAt = Date.now()
-      this.blocks = [new EditorBlock(blockId(), BlockType.PARAGRAPH, '', '', 0)]
-      this.statusText = '新笔记'
+      // 无选区：在末尾追加模板
+      this.editorContent = c + placeholder
+      this.wordCount = this.editorContent.length
+      this.textAreaController.caretPosition(this.editorContent.length)
     }
+
+    if (this.showPreview) { this.doParse() }
   }
 
-  async saveNote(): Promise<void> {
-    const fm: FileManager | null = this.fileManager
-    if (!fm) {
-      return
+  onEditorChange(v: string): void {
+    if (v !== this.editorContent && this.editorContent.length > 0) {
+      this.pushUndo()
     }
-
-    const parts: string[] = []
-    for (let i: number = 0; i < this.blocks.length; i++) {
-      parts.push(this.blocks[i].toMarkdown())
-    }
-    const markdown: string = parts.join('\n\n')
-
-    if (!this.noteId) {
-      const result = await fm.createFile(this.noteTitle, markdown)
-      if (result.isOk()) {
-        const file: NoteFile | null = result.getValue()
-        if (file) {
-          this.noteId = file.id
-          this.modifiedAt = file.modifiedAt
-          this.createdAt = file.createdAt
-          this.statusText = '已保存 ' + formatTime(file.modifiedAt)
-        }
-      } else {
-        this.statusText = '保存失败'
-      }
-    } else {
-      const result = await fm.saveFile(this.noteId, this.noteTitle, markdown)
-      if (result.isOk()) {
-        this.modifiedAt = Date.now()
-        this.statusText = '已保存 ' + formatTime(this.modifiedAt)
-      } else {
-        this.statusText = '保存失败'
-      }
-    }
+    this.editorContent = v; this.wordCount = v.length
+    if (this.showPreview) { this.doParse() }
   }
 
-  async deleteCurrentNote(): Promise<void> {
-    const fm: FileManager | null = this.fileManager
-    if (!fm || !this.noteId) {
-      return
-    }
-    await fm.deleteFile(this.noteId)
-    this.goBack()
+  doParse(): void {
+    const r = this.parser.parse(this.editorContent)
+    this.previewTokens = (r.isOk() && r.getValue()) ? r.getValue()! : []
   }
 
-  goBack(): void {
-    const uiCtx: UIContext | undefined = this.getUIContext()
-    if (uiCtx) {
-      try {
-        uiCtx.getRouter().back()
-      } catch (e) {
-        // router back failed
-      }
-    }
+  // ── 撤销/重做 ──────────────────────────────────
+
+  private pushUndo(): void {
+    const snap: EditSnapshot = new EditSnapshot(this.editorContent)
+    this.undoStack.push(snap)
+    if (this.undoStack.length > 100) { this.undoStack.splice(0, 1) }
+    this.redoStack = []
   }
 
-  addBlock(index: number): void {
-    const newBlock: EditorBlock = new EditorBlock(blockId(), BlockType.PARAGRAPH, '', '', 0)
-    const newBlocks: EditorBlock[] = []
-    for (let i: number = 0; i < this.blocks.length; i++) {
-      newBlocks.push(this.blocks[i])
-      if (i === index) {
-        newBlocks.push(newBlock)
-      }
-    }
-    this.blocks = newBlocks
+  doUndo(): void {
+    if (this.undoStack.length === 0) { return }
+    this.redoStack.push(new EditSnapshot(this.editorContent))
+    this.editorContent = this.undoStack.pop()!.content
+    this.wordCount = this.editorContent.length
+    if (this.showPreview) { this.doParse() }
   }
 
-  updateBlockContent(id: string, newContent: string): void {
-    const updated: EditorBlock[] = []
-    for (let i: number = 0; i < this.blocks.length; i++) {
-      const b: EditorBlock = this.blocks[i]
-      if (b.id === id) {
-        updated.push(new EditorBlock(b.id, b.blockType, newContent, b.language, b.headingLevel))
-      } else {
-        updated.push(b)
-      }
-    }
-    this.blocks = updated
+  doRedo(): void {
+    if (this.redoStack.length === 0) { return }
+    this.undoStack.push(new EditSnapshot(this.editorContent))
+    this.editorContent = this.redoStack.pop()!.content
+    this.wordCount = this.editorContent.length
+    if (this.showPreview) { this.doParse() }
   }
 
-  changeBlockType(id: string, newType: BlockType): void {
-    const updated: EditorBlock[] = []
-    for (let i: number = 0; i < this.blocks.length; i++) {
-      const b: EditorBlock = this.blocks[i]
-      if (b.id === id) {
-        let level: number = 0
-        if (newType === BlockType.HEADING_1) {
-          level = 1
-        } else if (newType === BlockType.HEADING_2) {
-          level = 2
-        } else if (newType === BlockType.HEADING_3) {
-          level = 3
-        } else if (newType === BlockType.HEADING_4) {
-          level = 4
-        }
-        updated.push(new EditorBlock(b.id, newType, b.content, b.language, level))
-      } else {
-        updated.push(b)
-      }
-    }
-    this.blocks = updated
-    this.showTypeMenu = false
-  }
+  // ══════════════════════════════════════════════════
+  // 键盘快捷键 (onKeyEvent, 直接用 keyCode)
+  // ══════════════════════════════════════════════════
 
-  removeBlock(id: string): void {
-    if (this.blocks.length <= 1) {
-      return
-    }
-    const filtered: EditorBlock[] = []
-    for (let i: number = 0; i < this.blocks.length; i++) {
-      if (this.blocks[i].id !== id) {
-        filtered.push(this.blocks[i])
-      }
-    }
-    this.blocks = filtered
-  }
-
-  showTypeMenuFor(id: string): void {
-    this.typeMenuBlockId = id
-    this.showTypeMenu = true
-  }
-
-  // ─── 预览：将块转为 Markdown 再解析（在 @State 驱动下调用）──
-
-  getPreviewTokens(block: EditorBlock): MarkdownToken[] {
-    const md: string = block.toMarkdown()
-    if (!md || md.trim().length === 0) {
-      return []
-    }
-    const result = this.parser.parse(md)
-    if (result.isOk()) {
-      const tokens: MarkdownToken[] | null = result.getValue()
-      if (tokens) {
-        return tokens
-      }
-    }
-    return []
-  }
-
-  // ─── 辅助 ────────────────────────────────────────────
-
-  getPlaceholder(type: BlockType): string {
-    switch (type) {
-      case BlockType.HEADING_1:
-        return '输入一级标题...'
-      case BlockType.HEADING_2:
-        return '输入二级标题...'
-      case BlockType.HEADING_3:
-        return '输入三级标题...'
-      case BlockType.HEADING_4:
-        return '输入四级标题...'
-      case BlockType.CODE:
-        return '输入代码...'
-      case BlockType.QUOTE:
-        return '输入引用内容...'
+  handleKeyEvent(event: KeyEvent): void {
+    switch (event.keyCode) {
+      case KeyCode.KEYCODE_S:
+        this.doSave()
+        return
+      case KeyCode.KEYCODE_Z:
+        this.doUndo()
+        return
+      case KeyCode.KEYCODE_Y:
+        this.doRedo()
+        return
+      case KeyCode.KEYCODE_B:
+        this.format('**', '**', '**加粗**')
+        return
+      case KeyCode.KEYCODE_I:
+        this.format('*', '*', '*斜体*')
+        return
+      case KeyCode.KEYCODE_U:
+        this.format('<u>', '</u>', '<u>下划线</u>')
+        return
+      case KeyCode.KEYCODE_K:
+        this.format('[', '](https://)', '[链接](url)')
+        return
+      case KeyCode.KEYCODE_L:
+        this.format('`', '`', '`代码`')
+        return
+      case KeyCode.KEYCODE_P:
+        this.togglePreview()
+        return
       default:
-        return '输入内容...'
+        return
     }
   }
 
-  getBlockFontSize(block: EditorBlock): number {
-    if (block.blockType === BlockType.HEADING_1) {
-      return 22
-    }
-    if (block.blockType === BlockType.HEADING_2) {
-      return 18
-    }
-    if (block.blockType === BlockType.HEADING_3) {
-      return 16
-    }
-    if (block.blockType === BlockType.HEADING_4) {
-      return 14
-    }
-    if (block.blockType === BlockType.CODE) {
-      return 13
-    }
-    return 15
+  /**
+   * 格式操作：有选区时包裹，无选区时在末尾追加模板。
+   * HarmonyOS TextAreaController.getTextSelection 是异步回调 —
+   * 真机上可在回调中获取选区后调用 wrap()。
+   * 当前版本：所有格式按钮在编辑器末尾追加模板文字。
+   */
+  format(before: string, after: string, placeholder: string): void {
+    const c: string = this.editorContent
+    this.pushUndo()
+    this.editorContent = c + placeholder
+    this.wordCount = this.editorContent.length
+    if (this.showPreview) { this.doParse() }
   }
 
-  isHeading(block: EditorBlock): boolean {
-    if (block.blockType === BlockType.HEADING_1) {
-      return true
-    }
-    if (block.blockType === BlockType.HEADING_2) {
-      return true
-    }
-    if (block.blockType === BlockType.HEADING_3) {
-      return true
-    }
-    if (block.blockType === BlockType.HEADING_4) {
-      return true
-    }
-    return false
+  // ══════════════════════════════════════════════════
+  // 操作
+  // ══════════════════════════════════════════════════
+
+  toggleSidebar(): void { this.showSidebar = !this.showSidebar }
+  togglePreview(): void { this.showPreview = !this.showPreview; if (this.showPreview) { this.doParse() } }
+
+  async doSave(): Promise<void> {
+    const m: FileManager | null = this.fm
+    if (!m || !this.activeNoteId) { return }
+    await m.saveFile(this.activeNoteId, this.activeTitle, this.editorContent)
+    this.activeContent = this.editorContent; this.modifiedAt = Date.now()
+    this.statusMsg = '已保存'
+    this.loadList()
   }
 
-  getBlockHeight(block: EditorBlock): number {
-    const lines: number = block.content.split('\n').length
-    const trueLines: number = Math.max(1, lines)
-    const lineH: number = block.blockType === BlockType.CODE ? 16 : 22
-    const extra: number = block.blockType === BlockType.CODE ? 24 : 16
-    return Math.min(trueLines * lineH + extra, 300)
+  async doNew(): Promise<void> {
+    const m: FileManager | null = this.fm
+    if (!m || this.tmpNewName.trim().length === 0) { return }
+    const r = await m.createFile(this.tmpNewName.trim(), '')
+    this.showNewDialog = false
+    if (r.isOk() && r.getValue()) {
+      const f: NoteFile = r.getValue()!
+      this.activeNoteId = f.id; this.activeTitle = f.title
+      this.activeContent = ''; this.createdAt = f.createdAt; this.modifiedAt = f.modifiedAt
+      this.setEditorContent(''); this.undoStack = []; this.redoStack = []
+      await this.loadList()
+    }
+  }
+  async doDelete(): Promise<void> {
+    const m: FileManager | null = this.fm
+    const t: NoteFile | null = this.deleteTarget
+    if (!m || !t) { return }
+    await m.deleteFile(t.id); this.showDeleteConfirm = false; this.deleteTarget = null
+    if (this.activeNoteId === t.id) { this.activeNoteId = ''; this.setEditorContent('') }
+    await this.loadList()
+  }
+  async doRename(): Promise<void> {
+    const m: FileManager | null = this.fm
+    const t: NoteFile | null = this.renameTarget
+    if (!m || !t || this.tmpRenameText.trim().length === 0) { return }
+    await m.renameFile(t.id, this.tmpRenameText.trim()); this.showRenameDialog = false
+    if (this.activeNoteId === t.id) { this.activeTitle = this.tmpRenameText.trim() }
+    await this.loadList()
   }
 
-  // ─── build ────────────────────────────────────────────
+  // ═══════════ build ═══════════
 
   build() {
     Stack() {
       Column() {
-        this.Toolbar()
-        if (this.showTitleEdit) {
-          this.TitleEditor()
-        }
-        this.MetaBar()
-        Scroll() {
-          Column() {
-            this.InsertButton(-1)
-            ForEach(this.blocks, (block: EditorBlock, idx: number) => {
-              Column() {
-                this.BlockView(block)
-              }
-              .width('100%')
-              this.InsertButton(idx)
-            }, (block: EditorBlock): string => block.id)
-          }
-          .width('100%')
-          .padding({ left: 12, right: 12, top: 8, bottom: 80 })
-        }
-        .width('100%')
-        .height('100%')
-        .scrollBar(BarState.Auto)
+        this.TopBar()
+        Divider().color('#e5e7eb')
+        this.FormatBar()
+        Divider().color('#e5e7eb')
+        this.MainContent()
+        Divider().color('#e5e7eb')
+        this.BottomBar()
       }
-      .width('100%')
-      .height('100%')
-      .backgroundColor('#1e1e1e')
+      .width('100%').height('100%').backgroundColor('#ffffff')
 
-      if (this.showTypeMenu) {
-        this.TypeMenuOverlay()
-      }
+      if (this.showNewDialog) { this.NewDialog() }
+      if (this.showRenameDialog) { this.RenameDialog() }
+      if (this.showDeleteConfirm) { this.DeleteDialog() }
+      if (this.showShortcuts) { this.ShortcutsDialog() }
     }
-    .width('100%')
-    .height('100%')
+    .width('100%').height('100%')
   }
 
-  @Builder Toolbar() {
+  @Builder TopBar() {
     Row() {
-      Button() {
-        Text('←').fontSize(18).fontColor('#cccccc')
-      }
-      .width(32).height(32).backgroundColor('#00000000')
-      .onClick(() => { this.goBack() })
-      Blank()
-      Button('保存')
-        .fontSize(13).fontColor('#ffffff').backgroundColor('#007AFF').borderRadius(4)
-        .padding({ left: 12, right: 12 })
-        .onClick(() => { this.saveNote() })
-      Button('删除')
-        .fontSize(13).fontColor('#ff6b6b').backgroundColor('#00000000')
-        .margin({ left: 8 })
-        .onClick(() => { this.deleteCurrentNote() })
-    }
-    .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 4 })
-  }
-
-  @Builder TitleEditor() {
-    Row() {
-      TextInput({ text: this.noteTitle, placeholder: '笔记标题' })
-        .fontSize(18).fontWeight(FontWeight.Bold).fontColor('#ffffff')
-        .backgroundColor('#00000000').layoutWeight(1)
-        .onChange((value: string) => { this.noteTitle = value })
-      Button('完成')
-        .fontSize(12).fontColor('#007AFF').backgroundColor('#00000000')
-        .onClick(() => { this.showTitleEdit = false })
-    }
-    .width('100%').padding({ left: 16, right: 12, top: 4, bottom: 8 })
-  }
-
-  @Builder MetaBar() {
-    Column() {
-      Row() {
-        Text(this.noteTitle)
-          .fontSize(18).fontWeight(FontWeight.Bold).fontColor('#ffffff')
-          .maxLines(1)
-          .onClick(() => {
-            this.editTitle = this.noteTitle
-            this.showTitleEdit = true
-          })
-      }
-      .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 2 })
-
-      Row() {
-        Text('创建: ' + (this.createdAt > 0 ? formatTime(this.createdAt) : '—'))
-          .fontSize(11).fontColor('#666666')
-        Text('  |  ')
-          .fontSize(11).fontColor('#555555')
-        Text('修改: ' + (this.modifiedAt > 0 ? formatTime(this.modifiedAt) : '—'))
-          .fontSize(11).fontColor('#666666')
-        Blank()
-        Text(this.statusText)
-          .fontSize(11).fontColor('#888888')
-      }
-      .width('100%').padding({ left: 16, right: 16, top: 2, bottom: 12 })
-    }
-  }
-
-  @Builder InsertButton(afterIndex: number) {
-    Row() {
-      Button() {
-        Row() {
-          Text('+').fontSize(14).fontColor('#888888')
-          Text(' 插入').fontSize(10).fontColor('#666666')
-        }
-      }
-      .height(26).backgroundColor('#00000000')
-      .border({ width: 1, color: '#333333', style: BorderStyle.Dashed }).borderRadius(4)
-      .padding({ left: 12, right: 12 })
-      .onClick(() => { this.addBlock(afterIndex) })
-      Blank()
-    }
-    .width('100%').padding({ left: 8, top: 4, bottom: 4 })
-  }
-
-  @Builder BlockView(block: EditorBlock) {
-    Column() {
-      // block toolbar
-      Row() {
-        Button(block.typeLabel())
-          .fontSize(10).fontWeight(FontWeight.Bold)
-          .fontColor('#007AFF').backgroundColor('#1a3a5c').borderRadius(3)
-          .height(22).padding({ left: 8, right: 8 })
-          .onClick(() => { this.showTypeMenuFor(block.id) })
-        Blank()
-        Button('×')
-          .fontSize(14).fontColor('#666666').backgroundColor('#00000000')
-          .width(24).height(24)
-          .onClick(() => { this.removeBlock(block.id) })
-      }
-      .width('100%').padding({ left: 4, right: 4, top: 2, bottom: 4 })
-
-      // textarea
-      TextArea({ text: block.content, placeholder: this.getPlaceholder(block.blockType) })
-        .width('100%')
-        .height(this.getBlockHeight(block))
-        .backgroundColor('#2a2a2a')
-        .fontSize(this.getBlockFontSize(block))
-        .fontColor('#d4d4d4')
-        .fontFamily(block.blockType === BlockType.CODE ? 'monospace' : 'sans-serif')
-        .fontWeight(this.isHeading(block) ? FontWeight.Bold : FontWeight.Normal)
-        .padding(12).borderRadius(6)
-        .border({ width: 1, color: '#333333' })
-        .onChange((value: string) => { this.updateBlockContent(block.id, value) })
-
-      // preview — 调用 getPreviewTokens 获取渲染数据
-      this.PreviewContent(block)
-
-      Divider().color('#2a2a2a').margin({ top: 8, bottom: 4 })
-    }
-    .width('100%').margin({ top: 4 })
-  }
-
-  @Builder PreviewContent(block: EditorBlock) {
-    if (block.content && block.content.trim().length > 0) {
-      Column() {
-        Column() {
-          ForEach(this.getPreviewTokens(block),
-            (token: MarkdownToken, idx: number) => {
-              this.RenderToken(token)
-            },
-            (token: MarkdownToken, idx: number): string => 'p_' + block.id + '_' + String(idx)
-          )
-        }
-        .width('100%').padding({ left: 8, top: 6, bottom: 6 })
-      }
-      .width('100%').backgroundColor('#252526')
-      .borderRadius({ bottomLeft: 6, bottomRight: 6 })
-      .border({ width: { left: 3 }, color: '#444444' })
-      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-    }
-  }
-
-  @Builder RenderToken(token: MarkdownToken) {
-    if (token.type === TokenType.HEADING) {
-      Text(token.children.map((s: InlineSpan): string => s.text).join(''))
-        .fontSize(Math.max(13, 22 - token.level * 2))
-        .fontWeight(FontWeight.Bold).fontColor('#e0e0e0')
-        .padding({ top: 2, bottom: 2 })
-    } else if (token.type === TokenType.CODE_BLOCK) {
-      Text(token.rawText)
-        .fontSize(12).fontColor('#ce9178').fontFamily('monospace')
-        .padding(8).backgroundColor('#1e1e1e').borderRadius(4)
-    } else if (token.type === TokenType.BLOCKQUOTE) {
-      Text(token.rawText)
-        .fontSize(13).fontColor('#aaaaaa').fontStyle(FontStyle.Italic)
-    } else if (token.type === TokenType.UNORDERED_LIST || token.type === TokenType.ORDERED_LIST) {
-      Column() {
-        ForEach(token.children, (item: InlineSpan, i: number) => {
-          Text((token.type === TokenType.ORDERED_LIST ? String(i + 1) + '. ' : '• ') + item.text)
-            .fontSize(13).fontColor('#d0d0d0').padding({ top: 1, bottom: 1 })
-        }, (item: InlineSpan, i: number): string => 'li_' + String(i))
-      }
-    } else if (token.type === TokenType.HORIZONTAL_RULE) {
-      Divider().color('#444444').margin({ top: 4, bottom: 4 })
-    } else {
-      Row() {
-        ForEach(token.children, (span: InlineSpan) => {
-          if (span.code) {
-            Text(span.text)
-              .fontSize(12).fontColor('#ce9178').fontFamily('monospace')
-              .backgroundColor('#333333').borderRadius(3)
-              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-          } else {
-            Text(span.text)
-              .fontSize(13).fontColor('#d0d0d0')
-              .fontWeight(span.bold ? FontWeight.Bold : FontWeight.Normal)
-              .fontStyle(span.italic ? FontStyle.Italic : FontStyle.Normal)
-          }
+      this.Btn('📝', '新建', (): void => { this.tmpNewName = ''; this.showNewDialog = true })
+      this.Btn('💾', '保存', (): void => { this.doSave() })
+      if (this.activeNoteId) {
+        this.Btn('↩', '撤销', (): void => { this.doUndo() })
+        this.Btn('↪', '重做', (): void => { this.doRedo() })
+        this.Btn('✎', '重命名', (): void => {
+          this.renameTarget = new NoteFile(this.activeNoteId, this.activeTitle, '', 0, 0)
+          this.tmpRenameText = this.activeTitle; this.showRenameDialog = true
+        })
+        this.Btn('🗑', '删除', (): void => {
+          this.deleteTarget = new NoteFile(this.activeNoteId, this.activeTitle, '', 0, 0)
+          this.showDeleteConfirm = true
         })
       }
-      .width('100%')
+      TextInput({ placeholder: '搜索...' })
+        .fontSize(13).fontColor('#111827').placeholderColor('#9ca3af')
+        .backgroundColor('#f3f4f6').borderRadius(10).height(38)
+        .layoutWeight(1).padding({ left: 12 })
+        .onChange((v: string) => { this.onSearch(v) })
+      this.Btn('⌨', '快捷键', (): void => { this.showShortcuts = !this.showShortcuts })
+      this.Btn('☰', '笔记', (): void => { this.toggleSidebar() })
+      this.Btn('◫', '预览', (): void => { this.togglePreview() })
+    }
+    .width('100%').padding({ left: 4, right: 4, top: 8, bottom: 6 })
+  }
+
+  @Builder Btn(icon: string, label: string, cb: () => void) {
+    Button() {
+      Column() { Text(icon).fontSize(17); Text(label).fontSize(9).fontColor('#6b7280').margin({ top: 1 }) }
+    }
+    .backgroundColor('#00000000').borderRadius(8).padding({ left: 6, right: 6 }).height(46)
+    .onClick(cb).margin({ left: 2, right: 2 })
+  }
+
+  @Builder FormatBar() {
+    Scroll() {
+      Row() {
+        this.Fmt('B', '**', '**', '**加粗**')
+        this.Fmt('I', '*', '*', '*斜体*')
+        this.Fmt('S', '~~', '~~', '~~删除线~~')
+        this.Fmt('U', '<u>', '</u>', '<u>下划线</u>')
+        this.Fmt('H1', '\n\n# ', '', '\n\n# 一级标题')
+        this.Fmt('H2', '\n\n## ', '', '\n\n## 二级标题')
+        this.Fmt('H3', '\n\n### ', '', '\n\n### 三级标题')
+        this.Fmt('`', '`', '`', '`代码`')
+        this.Fmt('```', '\n\n```\n', '\n```', '\n\n```\ncode\n```')
+        this.Fmt('>', '\n\n> ', '', '\n\n> 引用')
+        this.Fmt('-', '\n\n- ', '', '\n\n- 列表项')
+        this.Fmt('1.', '\n\n1. ', '', '\n\n1. 有序项')
+        this.Fmt('🔗', '[', '](https://)', '[链接](url)')
+        this.Fmt('🖼', '![', '](https://)', '![图片](url)')
+        this.Fmt('📊', '\n\n| A | B |\n| - | - |\n| ', ' |', '\n\n| 列A | 列B |\n| --- | --- |\n| 值 | 值 |')
+        this.Fmt('---', '\n\n---\n\n', '', '\n\n---\n\n')
+      }
+      .padding({ left: 6, right: 6 })
+    }
+    .width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+  }
+
+  @Builder Fmt(label: string, before: string, after: string, placeholder: string) {
+    Button(label)
+      .fontSize(11).fontWeight(FontWeight.Medium).height(28)
+      .fontColor('#374151').backgroundColor('#f3f4f6')
+      .border({ width: 1, color: '#d1d5db', radius: 4 })
+      .padding({ left: 10, right: 10 }).margin({ right: 4 })
+      .onClick(() => { this.format(before, after, placeholder) })
+  }
+
+  @Builder MainContent() {
+    Row() {
+      if (this.showSidebar) { this.LeftSidebar() }
+      this.CenterEditor()
+      if (this.showPreview) { this.RightPreview() }
+    }
+    .width('100%').layoutWeight(1)
+  }
+
+  @Builder LeftSidebar() {
+    Column() {
+      Row() {
+        Text('笔记').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#111827')
+        Blank()
+        Text(String(this.noteList.length) + ' 篇').fontSize(11).fontColor('#9ca3af')
+      }
+      .width('100%').padding({ left: 14, right: 10, top: 6, bottom: 4 })
+      if (this.listLoading) {
+        Column() { LoadingProgress().width(24).height(24).color('#3b82f6') }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else if (this.filteredList.length === 0) {
+        Column() { Text('无笔记').fontSize(13).fontColor('#9ca3af') }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else {
+        List() {
+          ForEach(this.filteredList, (f: NoteFile) => {
+            ListItem() {
+              Row() {
+                Column() {
+                  Text(f.title || '未命名').fontSize(14).fontWeight(FontWeight.Medium)
+                    .fontColor(this.activeNoteId === f.id ? '#3b82f6' : '#111827')
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(formatTime(f.modifiedAt)).fontSize(10).fontColor('#9ca3af').margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start).layoutWeight(1)
+              }
+              .width('100%').padding({ left: 14, right: 10, top: 10, bottom: 10 })
+              .backgroundColor(this.activeNoteId === f.id ? '#eff6ff' : '#00000000')
+              .border({ width: { left: this.activeNoteId === f.id ? 3 : 0 }, color: '#3b82f6' })
+              .onClick(() => { this.openNote(f) })
+            }
+          }, (f: NoteFile): string => f.id)
+        }
+        .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      }
+    }
+    .width(250).height('100%').backgroundColor('#f9fafb')
+    .border({ width: { right: 1 }, color: '#e5e7eb' })
+  }
+
+  @Builder CenterEditor() {
+    Column() {
+      if (this.activeNoteId) {
+        Row() {
+          Text(this.activeTitle).fontSize(14).fontWeight(FontWeight.Bold).fontColor('#111827')
+            .maxLines(1).layoutWeight(1)
+        }
+        .width('100%').padding({ left: 12, right: 12, top: 6, bottom: 4 })
+        Divider().color('#f3f4f6')
+      }
+      TextArea({ text: this.editorContent, placeholder: '# Markdown\n\n开始写作... Ctrl+S 保存', controller: this.textAreaController })
+        .width('100%').layoutWeight(1)
+        .backgroundColor('#ffffff').fontSize(15).fontColor('#111827')
+        .fontFamily('monospace').padding(16)
+        .borderRadius(0).caretColor('#3b82f6')
+        .onChange((v: string) => { this.onEditorChange(v) })
+        .onKeyEvent((event: KeyEvent): void => { this.handleKeyEvent(event) })
+    }
+    .layoutWeight(1).height('100%').backgroundColor('#ffffff')
+  }
+
+  @Builder RightPreview() {
+    Column() {
+      Row() {
+        Text('实时预览').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#111827')
+        Blank()
+        Button('↻').fontSize(14).fontColor('#3b82f6').backgroundColor('#00000000')
+          .width(28).height(28).onClick(() => { this.doParse() })
+      }
+      .width('100%').padding({ left: 12, right: 8, top: 6, bottom: 6 })
+      .border({ width: { bottom: 1 }, color: '#e5e7eb' })
+      Scroll() {
+        Column() {
+          if (this.previewTokens.length === 0) {
+            Text('在左侧编辑 Markdown，预览自动更新').fontSize(12).fontColor('#9ca3af')
+              .width('100%').padding(12)
+          } else {
+            ForEach(this.previewTokens, (t: MarkdownToken, i: number) => {
+              this.RenderBlock(t, i)
+            }, (t: MarkdownToken, i: number): string => 'pb_' + String(i))
+          }
+        }
+        .width('100%').padding(8)
+      }
+      .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+    }
+    .width(280).height('100%').backgroundColor('#fafbfc')
+    .border({ width: { left: 1 }, color: '#e5e7eb' })
+  }
+
+  @Builder RenderBlock(t: MarkdownToken, i: number) {
+    if (t.type === TokenType.HEADING) {
+      Text(t.children.map((s: InlineSpan): string => s.text).join(''))
+        .fontSize(Math.max(14, 24 - t.level * 3)).fontWeight(FontWeight.Bold).fontColor('#111827')
+        .padding({ top: 8, bottom: 2 })
+    } else if (t.type === TokenType.CODE_BLOCK) {
+      Text(t.rawText).fontSize(11).fontColor('#374151').fontFamily('monospace')
+        .padding(8).width('100%').backgroundColor('#f1f5f9').borderRadius(4).margin({ top: 4, bottom: 4 })
+    } else if (t.type === TokenType.BLOCKQUOTE) {
+      Text(t.rawText).fontSize(13).fontColor('#6b7280').fontStyle(FontStyle.Italic)
+        .border({ width: { left: 2 }, color: '#10b981' }).padding({ left: 8 })
+        .margin({ top: 4, bottom: 4 }).width('100%')
+    } else if (t.type === TokenType.HORIZONTAL_RULE) {
+      Divider().color('#e5e7eb').margin({ top: 6, bottom: 6 }).width('100%')
+    } else if (t.type === TokenType.UNORDERED_LIST || t.type === TokenType.ORDERED_LIST) {
+      ForEach(t.children, (item: InlineSpan, j: number) => {
+        Row() {
+          Text(t.type === TokenType.ORDERED_LIST ? String(j + 1) + '.' : '•')
+            .fontSize(13).fontColor('#6b7280').width(20)
+          Text(item.text).fontSize(13).fontColor('#374151')
+        }.width('100%').padding({ top: 1, bottom: 1 })
+      }, (item: InlineSpan, j: number): string => 'ci_' + String(i) + '_' + String(j))
+    } else {
+      Row() {
+        ForEach(t.children, (s: InlineSpan, idx: number) => {
+          if (s.code) {
+            Text(s.text).fontSize(12).fontColor('#7c3aed').fontFamily('monospace')
+              .backgroundColor('#f1f5f9').borderRadius(3).padding({ left: 4, right: 4, top: 1, bottom: 1 })
+          } else if (s.bold && s.italic) {
+            Text(s.text).fontSize(13).fontColor('#111827')
+              .fontWeight(FontWeight.Bold).fontStyle(FontStyle.Italic)
+          } else if (s.bold) {
+            Text(s.text).fontSize(13).fontColor('#111827').fontWeight(FontWeight.Bold)
+          } else if (s.italic) {
+            Text(s.text).fontSize(13).fontColor('#374151').fontStyle(FontStyle.Italic)
+          } else {
+            Text(s.text).fontSize(13).fontColor('#374151')
+          }
+        }, (s: InlineSpan, idx: number): string => 'is_' + String(i) + '_' + String(idx))
+      }.width('100%').padding({ top: 2, bottom: 2 })
     }
   }
 
-  @Builder TypeMenuOverlay() {
+  @Builder BottomBar() {
+    Row() {
+      if (this.statusMsg.length > 0) {
+        Text(this.statusMsg).fontSize(11).fontColor('#3b82f6')
+      } else if (this.activeNoteId) {
+        Text('编辑中 · Ctrl+S 保存 · Ctrl+Z 撤销 · Ctrl+B 加粗').fontSize(11).fontColor('#9ca3af')
+      } else {
+        Text('选择笔记开始编辑').fontSize(11).fontColor('#9ca3af')
+      }
+      Blank()
+      Text(String(this.noteList.length) + ' 篇').fontSize(11).fontColor('#9ca3af')
+      Text('  ·  ').fontSize(11).fontColor('#d1d5db')
+      Text(String(this.wordCount) + ' 字').fontSize(11).fontColor('#9ca3af')
+      if (this.activeNoteId) {
+        Text('  ·  ').fontSize(11).fontColor('#d1d5db')
+        Text('修改: ' + formatTime(this.modifiedAt > 0 ? this.modifiedAt : Date.now()))
+          .fontSize(11).fontColor('#9ca3af')
+      }
+    }
+    .width('100%').padding({ left: 16, right: 16, top: 6, bottom: 6 })
+    .backgroundColor('#f3f4f6')
+  }
+
+  // ══ 弹窗 ════════════════════════════════════════
+
+  @Builder NewDialog() {
     Column() {
       Column() {
-        Text('选择块类型')
-          .fontSize(16).fontWeight(FontWeight.Medium).fontColor('#ffffff')
-          .margin({ bottom: 12 })
-        this.TypeOption('¶ 段落', BlockType.PARAGRAPH)
-        this.TypeOption('H1 一级标题', BlockType.HEADING_1)
-        this.TypeOption('H2 二级标题', BlockType.HEADING_2)
-        this.TypeOption('H3 三级标题', BlockType.HEADING_3)
-        this.TypeOption('H4 四级标题', BlockType.HEADING_4)
-        this.TypeOption('</> 代码块', BlockType.CODE)
-        this.TypeOption('" 引用', BlockType.QUOTE)
-        this.TypeOption('• 无序列表', BlockType.UNORDERED_LIST)
-        this.TypeOption('1. 有序列表', BlockType.ORDERED_LIST)
-        Button('取消')
-          .fontSize(13).backgroundColor('#444444').fontColor('#cccccc')
-          .margin({ top: 12 })
-          .onClick(() => { this.showTypeMenu = false })
+        Text('新建笔记').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827').margin({ bottom: 14 })
+        TextInput({ text: this.tmpNewName, placeholder: '输入标题' })
+          .fontSize(14).fontColor('#111827').placeholderColor('#9ca3af')
+          .backgroundColor('#ffffff').border({ width: 1, color: '#d1d5db', radius: 8 }).padding(12)
+          .onChange((v: string) => { this.tmpNewName = v })
+        Row() {
+          Button('取消').fontSize(13).backgroundColor('#e5e7eb').fontColor('#374151')
+            .borderRadius(8).width('48%').onClick(() => { this.showNewDialog = false })
+          Button('创建').fontSize(13).backgroundColor('#3b82f6').fontColor('#ffffff')
+            .borderRadius(8).width('48%').margin({ left: 12 }).onClick(() => { this.doNew() })
+        }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 18 })
       }
-      .padding(20).backgroundColor('#2a2a2a').borderRadius(12).width('80%')
+      .padding(24).backgroundColor('#ffffff').borderRadius(14).width('85%')
+      .border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
     }
-    .width('100%').height('100%').backgroundColor('#1a1a1aee')
-    .justifyContent(FlexAlign.Center)
-    .onClick(() => { this.showTypeMenu = false })
+    .width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center)
+    .onClick(() => { this.showNewDialog = false })
   }
 
-  @Builder TypeOption(label: string, type: BlockType) {
-    Button(label)
-      .fontSize(14).fontColor('#e0e0e0').backgroundColor('#00000000')
-      .width('100%').height(40)
-      .border({ width: { bottom: 1 }, color: '#333333' })
-      .onClick(() => { this.changeBlockType(this.typeMenuBlockId, type) })
+  @Builder RenameDialog() {
+    Column() {
+      Column() {
+        Text('重命名').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827').margin({ bottom: 14 })
+        TextInput({ text: this.tmpRenameText, placeholder: '新标题' })
+          .fontSize(14).fontColor('#111827').placeholderColor('#9ca3af')
+          .backgroundColor('#ffffff').border({ width: 1, color: '#d1d5db', radius: 8 }).padding(12)
+          .onChange((v: string) => { this.tmpRenameText = v })
+        Row() {
+          Button('取消').fontSize(13).backgroundColor('#e5e7eb').fontColor('#374151')
+            .borderRadius(8).width('48%').onClick(() => { this.showRenameDialog = false })
+          Button('确认').fontSize(13).backgroundColor('#3b82f6').fontColor('#ffffff')
+            .borderRadius(8).width('48%').margin({ left: 12 }).onClick(() => { this.doRename() })
+        }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 18 })
+      }
+      .padding(24).backgroundColor('#ffffff').borderRadius(14).width('85%')
+      .border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
+    }
+    .width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center)
+    .onClick(() => { this.showRenameDialog = false })
+  }
+
+  @Builder DeleteDialog() {
+    Column() {
+      Column() {
+        Text('确认删除').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827').margin({ bottom: 6 })
+        Text(this.deleteTarget ? '"' + this.deleteTarget.title + '" 将被永久删除' : '')
+          .fontSize(13).fontColor('#6b7280').margin({ bottom: 18 })
+        Row() {
+          Button('取消').fontSize(13).backgroundColor('#e5e7eb').fontColor('#374151')
+            .borderRadius(8).width('48%').onClick(() => { this.showDeleteConfirm = false })
+          Button('删除').fontSize(13).backgroundColor('#ef4444').fontColor('#ffffff')
+            .borderRadius(8).width('48%').margin({ left: 12 }).onClick(() => { this.doDelete() })
+        }.width('100%').justifyContent(FlexAlign.Center)
+      }
+      .padding(24).backgroundColor('#ffffff').borderRadius(14).width('85%')
+      .border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
+    }
+    .width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center)
+    .onClick(() => { this.showDeleteConfirm = false })
+  }
+
+  @Builder ShortcutsDialog() {
+    Column() {
+      Column() {
+        Row() {
+          Text('快捷键一览').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827')
+          Blank()
+          Button('×').fontSize(18).fontColor('#6b7280').backgroundColor('#00000000')
+            .width(32).height(32).onClick(() => { this.showShortcuts = false })
+        }.width('100%').margin({ bottom: 16 })
+
+        this.ShortcutRow('Ctrl+S', '保存笔记')
+        this.ShortcutRow('Ctrl+Z', '撤销')
+        this.ShortcutRow('Ctrl+Y', '重做')
+        this.ShortcutRow('Ctrl+B', '加粗 **text**')
+        this.ShortcutRow('Ctrl+I', '斜体 *text*')
+        this.ShortcutRow('Ctrl+U', '下划线 <u>text</u>')
+        this.ShortcutRow('Ctrl+K', '链接 [text](url)')
+        this.ShortcutRow('Ctrl+L', '行内代码 `code`')
+        this.ShortcutRow('Ctrl+P', '切换预览')
+        Divider().color('#e5e7eb').margin({ top: 8, bottom: 8 })
+        Text('注：外接键盘 PC 模式下可用，触屏请用顶部格式按钮')
+          .fontSize(11).fontColor('#9ca3af')
+      }
+      .padding(24).backgroundColor('#ffffff').borderRadius(14).width('85%')
+      .border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
+    }
+    .width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center)
+    .onClick(() => { this.showShortcuts = false })
+  }
+
+  @Builder ShortcutRow(keys: string, desc: string) {
+    Row() {
+      Text(keys).fontSize(12).fontWeight(FontWeight.Bold).fontColor('#3b82f6')
+        .fontFamily('monospace').backgroundColor('#eff6ff').borderRadius(4).padding({ left: 8, right: 8, top: 2, bottom: 2 }).width(100)
+      Text(desc).fontSize(13).fontColor('#374151').margin({ left: 12 })
+    }
+    .width('100%').padding({ top: 4, bottom: 4 })
   }
 }

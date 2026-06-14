@@ -176,7 +176,26 @@ export class FileManager {
    * 重命名笔记文件。
    */
   async renameFile(id: string, newTitle: string): Promise<Result<void, AppError>> {
-    return this.saveFile(id, newTitle, '')
+    if (!this.pref) {
+      await this.init()
+    }
+    try {
+      const now: number = Date.now()
+      const index: NoteFile[] = await this.readIndex()
+      const file: NoteFile | undefined = index.find(
+        (f: NoteFile): boolean => f.id === id,
+      )
+      if (file) {
+        file.title = newTitle
+        file.modifiedAt = now
+        await this.writeIndex(index)
+      }
+      return ok<void, AppError>(undefined)
+    } catch (e) {
+      return err<void, AppError>(
+        new AppError(ErrorCode.STORAGE_WRITE_FAILED, 'Failed to rename file')
+      )
+    }
   }
 
   // ─── Private ─────────────────────────────────────────────
