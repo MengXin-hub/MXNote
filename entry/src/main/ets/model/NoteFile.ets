@@ -2,7 +2,8 @@
  * NoteFile — 笔记文件的元数据模型。
  *
  * 每个 NoteFile 对应一个独立的 .md 笔记文档。
- * content 存储在 Preferences 中，id 为 GUID。
+ * 文件以 GUID 命名存储在沙箱文件系统中。
+ * folderId 为 null 表示根目录文件。
  */
 export class NoteFile {
   id: string = ''
@@ -10,13 +11,39 @@ export class NoteFile {
   content: string = ''
   createdAt: number = 0 // Unix ms
   modifiedAt: number = 0
+  folderId: string | null = null
 
-  constructor(id: string, title: string, content: string, createdAt: number, modifiedAt: number) {
+  constructor(
+    id: string,
+    title: string,
+    content: string,
+    createdAt: number,
+    modifiedAt: number,
+    folderId: string | null = null
+  ) {
     this.id = id
     this.title = title
     this.content = content
     this.createdAt = createdAt
     this.modifiedAt = modifiedAt
+    this.folderId = folderId
+  }
+}
+
+/**
+ * Folder — 文件夹模型。
+ */
+export class Folder {
+  id: string = ''
+  name: string = ''
+  parentId: string | null = null
+  createdAt: number = 0 // Unix ms
+
+  constructor(id: string, name: string, parentId: string | null, createdAt: number) {
+    this.id = id
+    this.name = name
+    this.parentId = parentId
+    this.createdAt = createdAt
   }
 }
 

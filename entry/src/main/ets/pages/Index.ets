@@ -1,367 +1,415 @@
 /**
- * MXNote — 纯 Markdown 笔记, 可拖拽分栏。
- * 三面板: 左列表 | 中编辑 | 右预览(可拖拽调整宽度)
+ * Index — MXNote 主页面。
+ * TextArea 编辑器, 预览通过 MarkdownParser, 设置弹窗。
  */
-import { KeyCode } from '@kit.InputKit'
+import { ThemeColors, ThemeFontSize } from '../constants/ThemeConstants'
+import { IconConstants } from '../constants/IconConstants'
 import { FileManager } from '../core/FileManager'
-import { NoteFile, formatTime } from '../model/NoteFile'
+import { FileSystemManager } from '../core/FileSystemManager'
+import { NoteFile, Folder, formatTime } from '../model/NoteFile'
 import { MarkdownParser, MarkdownToken, TokenType, InlineSpan } from '../core/MarkdownParser'
+import { Result, AppError } from '../model/Result'
+import { preferences } from '@kit.ArkData'
+import { TitleBar } from './components/TitleBar'
+import { DlgInput, DlgConfirm, DlgMigrationError } from './components/Dialogs'
+import { SettingsDialog, LoginDialog } from './components/SettingsDialog'
 
-class Snap { text: string = ''; constructor(t: string) { this.text = t } }
+namespace LAYOUT {
+  export const MIN_PANEL: number = 100
+  export const MAX_PANEL: number = 600
+  export const LEFT_DEFAULT: number = 260
+  export const RIGHT_DEFAULT: number = 320
+  export const DIVIDER_W: number = 3
+  export const FILE_ROW_PAD_V: number = 9
+  export const FILE_ROW_PAD_H: number = 12
+  export const ACTION_BTN_H: number = 50
+  export const FOOTER_H: number = 30
+  export const SEARCH_DEBOUNCE: number = 300
+}
+
+interface LayoutCfg { leftWidth: number; rightWidth: number; leftVisible: boolean; rightVisible: boolean }
+interface AppCfg { layout: LayoutCfg }
+interface OldIdx { id: string; title: string; createdAt: number; modifiedAt: number }
 class OItem { text: string = ''; lv: number = 0; constructor(t: string, l: number) { this.text = t; this.lv = l } }
-
-const MIN_PX: number = 180
-const MAX_PX: number = 480
 
 @Entry
 @Component
 struct Index {
   @State files: NoteFile[] = []
-  @State query: string = ''
-  @State flt: NoteFile[] = []
-  @State aid: string = ''
-  @State atitle: string = ''
-  @State modT: number = 0
+  @State folders: Folder[] = []
   @State loading: boolean = true
+  @State searchQuery: string = ''
+  @State filteredFiles: NoteFile[] = []
+  private contentCache: Map<string, string> = new Map()
+  private searchTimer: number = -1
 
-  @State text: string = ''
-  @State tk: MarkdownToken[] = []
-  @State wc: number = 0
+  @State activeId: string = ''
+  @State activeTitle: string = ''
+  @State activeContent: string = ''
+  @State modifiedAt: number = 0
+  @State charCount: number = 0
+  @State fontSize: number = 18
+  @State isDirty: boolean = false
 
-  @State sw: number = 240       // sidebar width px
-  @State rw: number = 300       // right panel width px
-  @State sideOn: boolean = true // sidebar visible
-  @State previewOn: boolean = true // preview visible
-  @State outlineOn: boolean = false // outline mode
+  @State tokens: MarkdownToken[] = []
   @State oitems: OItem[] = []
-  @State msg: string = ''
+  @State previewReady: boolean = false
+
+  @State leftVisible: boolean = true
+  @State rightVisible: boolean = true
+  @State rightPanel: string = 'preview'
+  @State leftWidth: number = LAYOUT.LEFT_DEFAULT
+  @State rightWidth: number = LAYOUT.RIGHT_DEFAULT
+  private dragBaseLeft: number = 0
+  private dragBaseRight: number = 0
+
   @State dlgNew: boolean = false
+  @State dlgNewFolder: boolean = false
   @State dlgRename: boolean = false
   @State dlgDelete: boolean = false
   @State dlgSettings: boolean = false
-  @State dlgKeys: boolean = false
-  @State fontSize: number = 15
+  @State dlgLogin: boolean = false
+  @State dlgMigErr: boolean = false
+  @State dlgText: string = ''
+  @State dlgId: string = ''
+  @State dlgTitle: string = ''
+
+  @State needMig: boolean = false
+  @State migrating: boolean = false
 
   private fm: FileManager | null = null
+  private fsm: FileSystemManager | null = null
   private ps: MarkdownParser = new MarkdownParser()
-  private un: Snap[] = []
-  private re: Snap[] = []
-  private tmpNew: string = ''
-  private tmpRen: string = ''
-  private delTgt: NoteFile | null = null
-  private renTgt: NoteFile | null = null
-  private parseTmr: number = -1
-  private dragW0: number = 0
 
   aboutToAppear(): void {
     const c: UIContext | undefined = this.getUIContext()
     const h: Context | undefined = c ? c.getHostContext() : undefined
-    if (h) { this.fm = new FileManager(h); this.loadList() }
+    if (h) { this.fm = new FileManager(h); this.fsm = this.fm.getFileSystemManager(); this.initApp() }
   }
-  aboutToDisappear(): void { if (this.parseTmr !== -1) clearTimeout(this.parseTmr) }
-  onPageShow(): void { this.loadList() }
+  onPageShow(): void { this.reloadFiles() }
 
-  async loadList(): Promise<void> {
+  private async initApp(): Promise<void> {
+    const f: FileSystemManager | null = this.fsm; if (!f) return
+    if (f.needsMigration()) this.needMig = true
+    const cr = f.loadConfig(); if (cr.isOk() && cr.getValue()) {
+      const c: AppCfg = cr.getValue()! as AppCfg; const l: LayoutCfg = c.layout
+      if (l) { this.leftWidth = l.leftWidth || LAYOUT.LEFT_DEFAULT; this.rightWidth = l.rightWidth || LAYOUT.RIGHT_DEFAULT; this.leftVisible = l.leftVisible !== false; this.rightVisible = l.rightVisible !== false }
+    }
+    await this.reloadFiles()
+  }
+  private saveLayout(): void {
+    const f: FileSystemManager | null = this.fsm; if (!f) return
+    f.saveConfig({ layout: { leftWidth: this.leftWidth, rightWidth: this.rightWidth, leftVisible: this.leftVisible, rightVisible: this.rightVisible } })
+  }
+
+  async reloadFiles(): Promise<void> {
     const m: FileManager | null = this.fm; if (!m) return
-    this.loading = true; await m.init()
-    const r = await m.listFiles()
-    if (r.isOk() && r.getValue()) { this.files = r.getValue()!; this.doFl() }
-    this.loading = false
+    this.loading = true
+    const fr = await m.listFiles(); if (fr.isOk()) { const fl: NoteFile[] = fr.getValue()!; fl.sort((a: NoteFile, b: NoteFile) => b.modifiedAt - a.modifiedAt); this.files = fl }
+    const dr = await m.listFolders(); if (dr.isOk() && dr.getValue()) this.folders = dr.getValue()!
+    this.applyFilter(); this.loading = false
   }
 
-  doFl(): void {
-    const q: string = this.query.trim().toLowerCase()
-    if (!q) { this.flt = this.files; return }
-    const o: NoteFile[] = []
+  applyFilter(): void {
+    const q: string = this.searchQuery.trim().toLowerCase()
+    if (!q) { this.filteredFiles = this.files; return }
+    const r: NoteFile[] = []; const need: NoteFile[] = []
     for (let i: number = 0; i < this.files.length; i++) {
-      if (this.files[i].title.toLowerCase().indexOf(q) >= 0) o.push(this.files[i])
+      if (this.files[i].title.toLowerCase().indexOf(q) >= 0) r.push(this.files[i]); else need.push(this.files[i])
     }
-    this.flt = o
-  }
-
-  onQ(v: string): void { this.query = v; this.doFl() }
-
-  async openNote(f: NoteFile): Promise<void> {
-    const m: FileManager | null = this.fm; if (!m) return
-    const r = await m.readFile(f.id)
-    if (r.isOk() && r.getValue()) {
-      const d: NoteFile = r.getValue()!
-      this.aid = d.id; this.atitle = d.title; this.modT = d.modifiedAt
-      this.text = d.content; this.wc = d.content.length
-      this.un = []; this.re = []; this.doParse()
+    const remain: NoteFile[] = []
+    for (let i: number = 0; i < need.length; i++) {
+      const c: string | undefined = this.contentCache.get(need[i].id)
+      if (c !== undefined && c.toLowerCase().indexOf(q) >= 0) r.push(need[i])
+      else if (c === undefined) remain.push(need[i])
     }
+    this.filteredFiles = r
+    if (remain.length > 0) this.asyncContentSearch(remain, q)
   }
 
-  // ══ editor ═══════════════════════════════════════
-
-  onChange(v: string): void {
-    if (v !== this.text) { this.un.push(new Snap(this.text)); if (this.un.length > 100) this.un.splice(0, 1); this.re = [] }
-    this.text = v; this.wc = v.length; this.scheduleParse()
-  }
-
-  scheduleParse(): void {
-    if (this.parseTmr !== -1) clearTimeout(this.parseTmr)
-    this.parseTmr = setTimeout((): void => { this.parseTmr = -1; this.doParse() }, 350)
-  }
-
-  doParse(): void {
-    const r = this.ps.parse(this.text)
-    this.tk = (r.isOk() && r.getValue()) ? r.getValue()! : []
-  }
-
-  doOutline(): void {
-    const its: OItem[] = []
-    const r = this.ps.parse(this.text)
-    if (r.isOk() && r.getValue()) {
-      const ts: MarkdownToken[] = r.getValue()!
-      for (let i: number = 0; i < ts.length; i++) {
-        const t: MarkdownToken = ts[i]
-        if (t.type === TokenType.H) {
-          let tx: string = ''
-          for (let j: number = 0; j < t.kids.length; j++) tx += t.kids[j].t
-          its.push(new OItem(tx || ' ', t.lv))
+  private async asyncContentSearch(files: NoteFile[], q: string): Promise<void> {
+    for (let i: number = 0; i < files.length; i++) {
+      const f: NoteFile = files[i]; if (this.contentCache.has(f.id)) continue
+      try {
+        const m: FileManager | null = this.fm; if (!m) continue
+        const r: Result<NoteFile, AppError> = await m.readFile(f.id)
+        if (r.isOk() && r.getValue()) {
+          const c: string = r.getValue()!.content; this.contentCache.set(f.id, c)
+          if (c.toLowerCase().indexOf(q) >= 0) {
+            const cur: NoteFile[] = this.filteredFiles
+            if (!cur.some((x: NoteFile): boolean => x.id === f.id)) this.filteredFiles = cur.concat([f])
+          }
         }
-      }
+      } catch (e) { /* skip */ }
     }
-    this.oitems = its
   }
 
-  doUndo(): void {
-    if (this.un.length === 0) return
-    this.re.push(new Snap(this.text)); const s: Snap = this.un.pop()!; this.text = s.text; this.wc = s.text.length; this.doParse()
-  }
-  doRedo(): void {
-    if (this.re.length === 0) return
-    this.un.push(new Snap(this.text)); const s: Snap = this.re.pop()!; this.text = s.text; this.wc = s.text.length; this.doParse()
+  onSearch(v: string): void {
+    this.searchQuery = v
+    if (this.searchTimer >= 0) clearTimeout(this.searchTimer)
+    this.searchTimer = setTimeout(() => { this.applyFilter() }, LAYOUT.SEARCH_DEBOUNCE)
   }
 
-  // ══ keyboard ══════════════════════════════════════
-
-  onKey(e: KeyEvent): void {
-    if (e.keyCode === KeyCode.KEYCODE_S) { this.save() }
-    if (e.keyCode === KeyCode.KEYCODE_Z) { this.doUndo() }
-    if (e.keyCode === KeyCode.KEYCODE_Y) { this.doRedo() }
+  // ═══════════ 文件操作 ═══════════
+  async openFile(id: string): Promise<void> {
+    const m: FileManager | null = this.fm; if (!m) return
+    const r: Result<NoteFile, AppError> = await m.readFile(id); if (!r.isOk() || !r.getValue()) return
+    const d: NoteFile = r.getValue()!
+    this.activeId = d.id; this.activeTitle = d.title; this.activeContent = d.content
+    this.modifiedAt = d.modifiedAt; this.charCount = d.content.length
+    this.isDirty = false; this.previewReady = false
+    this.contentCache.set(d.id, d.content)
   }
 
-  // ══ actions ═══════════════════════════════════════
-
-  async save(): Promise<void> {
-    const m: FileManager | null = this.fm; if (!m || !this.aid) return
-    await m.saveFile(this.aid, this.atitle, this.text); this.modT = Date.now(); this.msg = '已保存'
-    setTimeout((): void => { this.msg = '' }, 2000); this.loadList()
+  async saveFile(): Promise<void> {
+    const m: FileManager | null = this.fm; if (!m || !this.activeId) return
+    await m.saveFile(this.activeId, this.activeTitle, this.activeContent)
+    this.modifiedAt = Date.now(); this.charCount = this.activeContent.length
+    this.isDirty = false
+    this.contentCache.set(this.activeId, this.activeContent)
+    this.renderPreview()
   }
 
-  async doNew(): Promise<void> {
-    const m: FileManager | null = this.fm; if (!m || this.tmpNew.trim().length === 0) return
-    const r = await m.createFile(this.tmpNew.trim(), ''); this.dlgNew = false
-    if (r.isOk() && r.getValue()) { const f: NoteFile = r.getValue()!; this.aid = f.id; this.atitle = f.title; this.modT = f.modifiedAt; this.text = ''; this.tk = []; this.wc = 0; this.un = []; this.re = []; await this.loadList() }
+  private renderPreview(): void {
+    const r: Result<MarkdownToken[], Object> = this.ps.parse(this.activeContent)
+    this.tokens = (r.isOk() && r.getValue()) ? r.getValue()! : []; this.previewReady = true
+    const oi: OItem[] = []
+    for (let i: number = 0; i < this.tokens.length; i++) { const tk = this.tokens[i]; if (tk.type === TokenType.H) { let tx: string = ''; for (let j: number = 0; j < tk.kids.length; j++) tx += tk.kids[j].t; oi.push(new OItem(tx || ' ', tk.lv)) } }
+    this.oitems = oi
   }
 
-  async doRename(): Promise<void> {
-    const m: FileManager | null = this.fm; const t: NoteFile | null = this.renTgt
-    if (!m || !t || this.tmpRen.trim().length === 0) return
-    await m.renameFile(t.id, this.tmpRen.trim()); this.dlgRename = false
-    if (this.aid === t.id) this.atitle = this.tmpRen.trim()
-    await this.loadList()
+  async doNew(): Promise<void> { const m: FileManager | null = this.fm; const nm: string = this.dlgText.trim(); if (!m || !nm) return; const r: Result<NoteFile, AppError> = await m.createFile(nm, ''); this.dlgNew = false; if (r.isOk() && r.getValue()) { await this.reloadFiles(); this.openFile(r.getValue()!.id) } }
+  async doNewFolder(): Promise<void> { const m: FileManager | null = this.fm; const nm: string = this.dlgText.trim(); if (!m || !nm) return; await m.createFolder(nm); this.dlgNewFolder = false; await this.reloadFiles() }
+  async doDelete(): Promise<void> { const m: FileManager | null = this.fm; if (!m || !this.dlgId) return; await m.deleteFile(this.dlgId); this.dlgDelete = false; if (this.activeId === this.dlgId) { this.activeId = ''; this.activeContent = ''; this.activeTitle = ''; this.charCount = 0; this.previewReady = false }; await this.reloadFiles() }
+  async doRename(): Promise<void> { const m: FileManager | null = this.fm; const nt: string = this.dlgText.trim(); if (!m || !this.dlgId || !nt) return; await m.renameFile(this.dlgId, nt); this.dlgRename = false; if (this.activeId === this.dlgId) this.activeTitle = nt; await this.reloadFiles() }
+
+  // 面板
+  tgRight(panel: string): void {
+    if (this.rightPanel === panel && this.rightVisible) { this.rightVisible = false; return }
+    this.rightPanel = panel; this.rightVisible = true
+    if (panel === 'preview' && !this.previewReady && this.activeId) { this.renderPreview() }
   }
 
-  async doDelete(): Promise<void> {
-    const m: FileManager | null = this.fm; const t: NoteFile | null = this.delTgt
-    if (!m || !t) return; await m.deleteFile(t.id); this.dlgDelete = false; this.delTgt = null
-    if (this.aid === t.id) { this.aid = ''; this.text = ''; this.tk = [] }
-    await this.loadList()
+  // 迁移
+  async doMigration(): Promise<void> {
+    this.migrating = true; const f: FileSystemManager | null = this.fsm; if (!f) return
+    try {
+      const ctx: Context | undefined = this.getUIContext()?.getHostContext(); if (!ctx) return
+      const pref: preferences.Preferences = await preferences.getPreferences(ctx, 'mxnote_file_store')
+      const ij: string = pref.getSync('mxnote_file_index', '[]') as string
+      const oi: OldIdx[] = JSON.parse(ij) as OldIdx[]
+      const ent: Map<string, string> = new Map(); for (let i: number = 0; i < oi.length; i++) ent.set(oi[i].id, pref.getSync('mxnote_file_' + oi[i].id, '') as string)
+      const r: Result<number, AppError> = f.migrateFromPreferences(ij, ent)
+      if (r.isOk()) { this.needMig = false; await this.reloadFiles() } else { this.dlgMigErr = true }
+    } catch (e) { this.dlgMigErr = true }
+    this.migrating = false
   }
 
-  // ══ drag ══════════════════════════════════════════
+  // 拖拽
+  leftDragStart(): void { this.dragBaseLeft = this.leftWidth }
+  leftDragUpdate(ev: GestureEvent): void { this.leftWidth = Math.max(LAYOUT.MIN_PANEL, Math.min(LAYOUT.MAX_PANEL, this.dragBaseLeft + ev.offsetX)); this.saveLayout() }
+  rightDragStart(): void { this.dragBaseRight = this.rightWidth }
+  rightDragUpdate(ev: GestureEvent): void { this.rightWidth = Math.max(LAYOUT.MIN_PANEL, Math.min(LAYOUT.MAX_PANEL, this.dragBaseRight - ev.offsetX)); this.saveLayout() }
 
-  onDragLeft(ev: GestureEvent): void { const w: number = this.dragW0 + ev.offsetX; this.sw = Math.max(MIN_PX, Math.min(MAX_PX, w)) }
-  onDragRight(ev: GestureEvent): void { const w: number = this.dragW0 - ev.offsetX; this.rw = Math.max(MIN_PX, Math.min(MAX_PX, w)) }
-
-  // ══ build ═════════════════════════════════════════
-
+  // ═══════════════════════════════════════════════════════════════
+  // BUILD
+  // ═══════════════════════════════════════════════════════════════
   build() {
     Stack() {
       Column() {
-        this.Toolbar()
-        Divider().color('#e5e7eb')
-        this.Main()
-        Divider().color('#e5e7eb')
-        this.Footer()
-      }.width('100%').height('100%').backgroundColor('#ffffff')
+        TitleBar({
+          searchQuery: $searchQuery,
+          leftVisible: this.leftVisible,
+          rightVisible: this.rightVisible,
+          onSearchChange: (v: string): void => { this.onSearch(v) },
+          onLeftToggle: (): void => { this.leftVisible = !this.leftVisible; this.saveLayout() },
+          onRightToggle: (): void => { this.rightVisible = !this.rightVisible; this.saveLayout() },
+          onSettingsClick: (): void => { this.dlgSettings = true }
+        })
 
-      if (this.dlgNew) this.Dialog('新建笔记', this.tmpNew, '标题', (v: string): void => { this.tmpNew = v }, (): void => { this.doNew() }, (): void => { this.dlgNew = false })
-      if (this.dlgRename) this.Dialog('重命名', this.tmpRen, '新标题', (v: string): void => { this.tmpRen = v }, (): void => { this.doRename() }, (): void => { this.dlgRename = false })
-      if (this.dlgDelete) this.DlgDelete()
-      if (this.dlgSettings) this.DlgSettings()
-      if (this.dlgKeys) this.DlgKeys()
+        Divider().color(ThemeColors.colorBorderSubtle).height(1)
+
+        Row() {
+          // ══ 左面板 ════════════════════════════════════════════
+          if (this.leftVisible) {
+            Column() {
+              Row({ space: 6 }) {
+                this.ActionBtn('新建文件', IconConstants.IC_NOTE, (): void => { this.dlgText = ''; this.dlgNew = true })
+                this.ActionBtn('新建文件夹', IconConstants.IC_FOLDER_NEW, (): void => { this.dlgText = ''; this.dlgNewFolder = true })
+                this.ActionBtn('导入文件', IconConstants.IC_TEXT, (): void => { })
+              }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+
+              Divider().color(ThemeColors.colorBorderSubtle)
+
+              if (this.loading) {
+                Column() { LoadingProgress().width(22).height(22).color(ThemeColors.colorAccentBlue) }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+              } else if (this.filteredFiles.length === 0) {
+                Column() {
+                  Image(IconConstants.IC_NOTE).width(36).height(36).fillColor(ThemeColors.colorBorderDefault).margin({ bottom: 10 })
+                  Text(this.searchQuery ? '无匹配结果' : '暂无笔记').fontSize(12).fontColor(ThemeColors.colorTextTertiary)
+                }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+              } else {
+                List() {
+                  ForEach(this.filteredFiles, (f: NoteFile) => {
+                    ListItem() {
+                      Row() {
+                        Image(IconConstants.IC_NOTE).width(16).height(16)
+                          .fillColor(this.activeId === f.id ? ThemeColors.colorAccentBlue : ThemeColors.colorTextSecondary).margin({ right: 8 })
+                        Column() {
+                          Text(f.title || '未命名').fontSize(13).fontWeight(FontWeight.Medium)
+                            .fontColor(this.activeId === f.id ? ThemeColors.colorAccentBlue : ThemeColors.colorTextPrimary)
+                            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                          if (this.searchQuery.length > 0) {
+                            Text(this.getSnippet(f.id, this.searchQuery)).fontSize(10)
+                              .fontColor(ThemeColors.colorTextTertiary).maxLines(1).margin({ top: 1 })
+                          }
+                          Text(this.fmtRel(f.modifiedAt)).fontSize(10).fontColor(ThemeColors.colorTextTertiary).margin({ top: 1 })
+                        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                      }
+                      .width('100%').padding({ left: LAYOUT.FILE_ROW_PAD_H, right: LAYOUT.FILE_ROW_PAD_H, top: LAYOUT.FILE_ROW_PAD_V, bottom: LAYOUT.FILE_ROW_PAD_V })
+                      .backgroundColor(this.activeId === f.id ? ThemeColors.colorBgSelected : '#00000000')
+                      .border({ width: { left: this.activeId === f.id ? 3 : 0 }, color: ThemeColors.colorAccentBlue })
+                      .onClick(() => { this.openFile(f.id) })
+                      .gesture(LongPressGesture().onAction(() => { this.dlgId = f.id; this.dlgTitle = f.title; this.dlgText = f.title }))
+                    }
+                  }, (f: NoteFile): string => 'f_' + f.id)
+                }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+              }
+            }
+            .width(this.leftWidth).height('100%').backgroundColor(ThemeColors.colorBgSurface)
+            .border({ width: { right: 1 }, color: ThemeColors.colorBorderSubtle })
+          }
+
+          if (this.leftVisible) {
+            Column().width(LAYOUT.DIVIDER_W).height('100%').backgroundColor('#d0d0d0')
+              .gesture(PanGesture({ direction: PanDirection.Horizontal })
+                .onActionStart((): void => { this.leftDragStart() })
+                .onActionUpdate((ev: GestureEvent): void => { this.leftDragUpdate(ev) }))
+          }
+
+          // ══ 中间编辑区 ═══════════════════════════════════════
+          Column() {
+            if (this.activeId) {
+              TextArea({ text: $$this.activeContent, placeholder: '# Markdown\n\n写完点击预览查看效果' })
+                .width('100%').layoutWeight(1).backgroundColor(ThemeColors.colorBgCanvas)
+                .fontSize(this.fontSize).fontColor(ThemeColors.colorTextPrimary)
+                .fontFamily('monospace').padding(14).borderRadius(0)
+                .caretColor(ThemeColors.colorAccentBlue).placeholderColor(ThemeColors.colorTextTertiary)
+                .onChange((v: string) => {
+                  this.charCount = v.length; this.isDirty = true; this.previewReady = false
+                })
+
+              Row() {
+                Text(this.charCount.toString() + ' 字').fontSize(11).fontColor(ThemeColors.colorTextTertiary)
+                Text('  ·  ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
+                Text(this.isDirty ? '已修改' : '已保存').fontSize(11).fontColor(this.isDirty ? ThemeColors.colorAccentYellow : ThemeColors.colorAccentGreen)
+                Text('  ·  ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
+                Text('保存 Ctrl+S').fontSize(11).fontColor(ThemeColors.colorAccentBlue).onClick(() => { this.saveFile() })
+                Blank()
+                Text('导出').fontSize(11).fontColor(ThemeColors.colorTextSecondary)
+                Text('  ·  ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
+                Text('大纲').fontSize(11).fontColor(ThemeColors.colorAccentBlue).onClick(() => { this.tgRight('preview') })
+              }.width('100%').height(LAYOUT.FOOTER_H).padding({ left: 16, right: 16 })
+              .backgroundColor(ThemeColors.colorBgSurface).border({ width: { top: 1 }, color: ThemeColors.colorBorderSubtle })
+            } else {
+              Column() {
+                Image(IconConstants.IC_NOTE).width(48).height(48).fillColor(ThemeColors.colorBorderDefault).margin({ bottom: 12 })
+                Text('选择或新建笔记开始编辑').fontSize(13).fontColor(ThemeColors.colorTextSecondary)
+              }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor(ThemeColors.colorBgCanvas)
+            }
+          }.layoutWeight(1).height('100%').backgroundColor(ThemeColors.colorBgCanvas)
+
+          if (this.rightVisible) {
+            Column().width(LAYOUT.DIVIDER_W).height('100%').backgroundColor('#d0d0d0')
+              .gesture(PanGesture({ direction: PanDirection.Horizontal })
+                .onActionStart((): void => { this.rightDragStart() })
+                .onActionUpdate((ev: GestureEvent): void => { this.rightDragUpdate(ev) }))
+          }
+
+          if (this.rightVisible) {
+            if (this.rightPanel === 'preview') { this.BuildPreview() }
+            else { this.BuildAi() }
+          }
+        }.width('100%').layoutWeight(1)
+      }.width('100%').height('100%').backgroundColor(ThemeColors.colorBgCanvas)
+
+      // 对话框
+      if (this.dlgNew) { DlgInput({ title: '新建文件', textValue: $dlgText, placeholder: '输入文件名', confirmLabel: '创建', onConfirm: (): void => { this.doNew() }, onCancel: (): void => { this.dlgNew = false } }) }
+      if (this.dlgNewFolder) { DlgInput({ title: '新建文件夹', textValue: $dlgText, placeholder: '输入文件夹名', confirmLabel: '创建', onConfirm: (): void => { this.doNewFolder() }, onCancel: (): void => { this.dlgNewFolder = false } }) }
+      if (this.dlgRename) { DlgInput({ title: '重命名', textValue: $dlgText, placeholder: '输入新名称', confirmLabel: '确认', onConfirm: (): void => { this.doRename() }, onCancel: (): void => { this.dlgRename = false } }) }
+      if (this.dlgDelete) { DlgConfirm({ title: '确认删除', message: '"' + this.dlgTitle + '" 将被永久删除', confirmLabel: '删除', confirmColor: ThemeColors.colorAccentRed, onConfirm: (): void => { this.doDelete() }, onCancel: (): void => { this.dlgDelete = false } }) }
+      if (this.dlgMigErr) { DlgMigrationError({ onRetry: (): void => { this.dlgMigErr = false; this.doMigration() }, onSkip: (): void => { this.dlgMigErr = false; this.needMig = false } }) }
+      if (this.migrating) { Column() { LoadingProgress().width(28).height(28).color(ThemeColors.colorAccentBlue); Text('迁移中...').fontSize(13).fontColor(ThemeColors.colorTextSecondary).margin({ top: 10 }) }.width('100%').height('100%').backgroundColor(ThemeColors.colorBgOverlay).justifyContent(FlexAlign.Center) }
+
+      if (this.dlgSettings) {
+        SettingsDialog({
+          fontSize: $fontSize,
+          showLogin: $dlgLogin,
+          onClose: (): void => { this.dlgSettings = false },
+          onFontPlus: (): void => { if (this.fontSize < 32) this.fontSize += 1 },
+          onFontMinus: (): void => { if (this.fontSize > 10) this.fontSize -= 1 }
+        })
+      }
+      if (this.dlgLogin) { LoginDialog({ onClose: (): void => { this.dlgLogin = false } }) }
     }.width('100%').height('100%')
   }
 
-  @Builder Toolbar() {
-    Row() {
-      this.Btn('📝', '新建', (): void => { this.tmpNew = ''; this.dlgNew = true })
-      this.Btn('💾', '保存', (): void => { this.save() })
-      if (this.aid) {
-        this.Btn('↩', '撤销', (): void => { this.doUndo() })
-        this.Btn('↪', '重做', (): void => { this.doRedo() })
-        this.Btn('✎', '重命名', (): void => { this.renTgt = new NoteFile(this.aid, this.atitle, '', 0, 0); this.tmpRen = this.atitle; this.dlgRename = true })
-        this.Btn('🗑', '删除', (): void => { this.delTgt = new NoteFile(this.aid, this.atitle, '', 0, 0); this.dlgDelete = true })
-      }
-      TextInput({ placeholder: '搜索...' }).fontSize(13).fontColor('#111827').placeholderColor('#9ca3af').backgroundColor('#f3f4f6').borderRadius(10).height(38).layoutWeight(1).padding({ left: 12 }).onChange((v: string): void => { this.onQ(v) })
-      this.Btn('☰', '列表', (): void => { this.sideOn = !this.sideOn })
-      this.Btn('◫', '预览', (): void => { this.previewOn = !this.previewOn; if (this.previewOn) { this.outlineOn = false; this.doParse() } })
-    }.width('100%').padding({ left: 4, right: 4, top: 8, bottom: 6 })
+  @Builder ActionBtn(label: string, icon: Resource, cb: () => void) {
+    Row({ space: 3 }) {
+      Image(icon).width(14).height(14).fillColor(ThemeColors.colorTextPrimary)
+      Text(label).fontSize(11).fontColor(ThemeColors.colorTextPrimary)
+    }.height(LAYOUT.ACTION_BTN_H).padding({ left: 10, right: 10 })
+    .backgroundColor(ThemeColors.colorBgHover).borderRadius(6).onClick(cb)
   }
 
-  @Builder Btn(icon: string, label: string, cb: () => void) {
-    Button() { Column() { Text(icon).fontSize(17); Text(label).fontSize(9).fontColor('#6b7280').margin({ top: 1 }) } }
-      .backgroundColor('#00000000').borderRadius(8).padding({ left: 6, right: 6 }).height(46).onClick(cb).margin({ left: 2, right: 2 })
-  }
-
-  @Builder Main() {
-    Row() {
-      if (this.sideOn) {
-        this.LeftSidebar()
-        Column().width(6).height('100%').backgroundColor('#e5e7eb')
-          .gesture(PanGesture({ direction: PanDirection.Horizontal })
-            .onActionStart((ev: GestureEvent): void => { this.dragW0 = this.sw })
-            .onActionUpdate((ev: GestureEvent): void => { this.onDragLeft(ev) }))
-      }
-      this.CenterEditor()
-      if (this.previewOn) {
-        Column().width(6).height('100%').backgroundColor('#e5e7eb')
-          .gesture(PanGesture({ direction: PanDirection.Horizontal })
-            .onActionStart((ev: GestureEvent): void => { this.dragW0 = this.rw })
-            .onActionUpdate((ev: GestureEvent): void => { this.onDragRight(ev) }))
-        if (this.outlineOn) { this.OutlinePanel() } else { this.RightPanel() }
-      }
-    }.width('100%').layoutWeight(1)
-  }
-
-  @Builder LeftSidebar() {
+  @Builder BuildPreview() {
     Column() {
-      if (this.loading) { Column() { LoadingProgress().width(24).height(24).color('#3b82f6') }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center) }
-      else if (this.flt.length === 0) { Column() { Text('无笔记').fontSize(13).fontColor('#9ca3af') }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center) }
-      else {
-        List() {
-          ForEach(this.flt, (f: NoteFile) => {
-            ListItem() {
-              Row() {
-                Column() { Text(f.title || '未命名').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.aid === f.id ? '#3b82f6' : '#111827').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }); Text(formatTime(f.modifiedAt)).fontSize(10).fontColor('#9ca3af').margin({ top: 2 }) }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-              }.width('100%').padding({ left: 14, right: 10, top: 10, bottom: 10 }).backgroundColor(this.aid === f.id ? '#eff6ff' : '#00000000').border({ width: { left: this.aid === f.id ? 3 : 0 }, color: '#3b82f6' })
-              .onClick((): void => { this.openNote(f) })
-            }
-          }, (f: NoteFile): string => f.id)
-        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-      }
-    }.width(this.sw).height('100%').backgroundColor('#f9fafb').clip(true)
-  }
-
-  @Builder CenterEditor() {
-    Column() {
-      if (this.aid) { Row() { Text(this.atitle).fontSize(14).fontWeight(FontWeight.Bold).fontColor('#111827').maxLines(1).layoutWeight(1) }.width('100%').padding({ left: 12, right: 12, top: 6, bottom: 4 }); Divider().color('#f3f4f6') }
-      TextArea({ text: this.text, placeholder: '# Markdown\n\n写作...' }).width('100%').layoutWeight(1).backgroundColor('#ffffff').fontSize(this.fontSize).fontColor('#111827').fontFamily('monospace').padding(16).borderRadius(0).caretColor('#3b82f6').onChange((v: string): void => { this.onChange(v) }).onKeyEvent((e: KeyEvent): void => { this.onKey(e) })
-    }.layoutWeight(1).height('100%').backgroundColor('#ffffff')
-  }
-
-  // ══ preview ════════════════════════════════════════
-
-  @Builder RightPanel() {
-    Column() {
-      Row() { Text('预览').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#111827'); Blank(); Text(this.wc.toString() + ' 字').fontSize(11).fontColor('#9ca3af') }.width('100%').padding({ left: 12, right: 10, top: 8, bottom: 6 }).border({ width: { bottom: 1 }, color: '#e5e7eb' })
+      Row() {
+        Text('预览').fontSize(12).fontWeight(FontWeight.Bold).fontColor(ThemeColors.colorTextPrimary); Blank()
+        Text('✕').fontSize(14).fontColor(ThemeColors.colorTextTertiary).onClick(() => { this.rightVisible = false; this.saveLayout() })
+      }.width('100%').padding({ left: 10, right: 6, top: 8, bottom: 5 }).border({ width: { bottom: 1 }, color: ThemeColors.colorBorderSubtle })
       Scroll() {
         Column() {
-          if (this.tk.length === 0) { Text('输入 Markdown 自动预览').fontSize(12).fontColor('#9ca3af').width('100%').padding(12) }
-          else { ForEach(this.tk, (t: MarkdownToken, i: number) => { this.Block(t, i) }, (t: MarkdownToken, i: number): string => 'b_' + i.toString()) }
-        }.width('100%').padding(12)
+          if (!this.previewReady || this.tokens.length === 0) { Text('保存后自动生成预览').fontSize(11).fontColor(ThemeColors.colorTextTertiary).width('100%').padding(10) }
+          else { ForEach(this.tokens, (t: MarkdownToken, i: number) => { this.Block(t, i) }, (t: MarkdownToken, i: number): string => 'b_' + i.toString()) }
+        }.width('100%').padding(10)
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-    }.width(this.rw).height('100%').backgroundColor('#fafbfc').clip(true)
+    }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc').border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
   }
 
   @Builder Block(t: MarkdownToken, i: number) {
-    if (t.type === TokenType.H) { Text(t.kids.map((s: InlineSpan): string => s.t).join('')).fontSize(Math.max(14, 26 - t.lv * 3)).fontWeight(FontWeight.Bold).fontColor('#111827').padding({ top: 10, bottom: 2 }).width('100%') }
-    else if (t.type === TokenType.C) { Text(t.raw).fontSize(12).fontColor('#374151').fontFamily('monospace').padding(12).width('100%').backgroundColor('#f1f5f9').borderRadius(6).margin({ top: 6, bottom: 6 }) }
-    else if (t.type === TokenType.Q) { Text(t.raw).fontSize(14).fontColor('#6b7280').fontStyle(FontStyle.Italic).width('100%').border({ width: { left: 3 }, color: '#10b981' }).padding({ left: 12 }).margin({ top: 6, bottom: 6 }) }
-    else if (t.type === TokenType.HR) { Divider().color('#e5e7eb').margin({ top: 14, bottom: 14 }).width('100%') }
-    else if (t.type === TokenType.UL || t.type === TokenType.OL) { Column() { ForEach(t.kids, (it: InlineSpan, j: number) => { Row() { Text(t.type === TokenType.OL ? (j + 1).toString() + '.' : '•').fontSize(14).fontColor('#6b7280').width(24); Text(it.t).fontSize(14).fontColor('#374151') }.width('100%').padding({ top: 2, bottom: 2 }) }, (it: InlineSpan, j: number): string => 'li_' + i.toString() + '_' + j.toString()) }.width('100%').margin({ top: 4, bottom: 4 }) }
-    else { Row() { ForEach(t.kids, (s: InlineSpan, idx: number) => { if (s.c) { Text(s.t).fontSize(14).fontColor('#7c3aed').fontFamily('monospace').backgroundColor('#f1f5f9').borderRadius(3).padding({ left: 4, right: 4, top: 2, bottom: 2 }) } else if (s.b && s.i) { Text(s.t).fontSize(14).fontColor('#111827').fontWeight(FontWeight.Bold).fontStyle(FontStyle.Italic) } else if (s.b) { Text(s.t).fontSize(14).fontColor('#111827').fontWeight(FontWeight.Bold) } else if (s.i) { Text(s.t).fontSize(14).fontColor('#374151').fontStyle(FontStyle.Italic) } else { Text(s.t).fontSize(14).fontColor('#374151') } }, (s: InlineSpan, idx: number): string => 'is_' + i.toString() + '_' + idx.toString()) }.width('100%').padding({ top: 4, bottom: 4 }) }
+    if (t.type === TokenType.H) { Text(t.kids.map((s: InlineSpan): string => s.t).join('')).fontSize(Math.max(14,28-t.lv*3)).fontWeight(FontWeight.Bold).fontColor(ThemeColors.colorTextPrimary).padding({ top:10, bottom:2 }).width('100%') }
+    else if (t.type === TokenType.C) { Text(t.raw).fontSize(12).fontColor(ThemeColors.colorTextSecondary).fontFamily('monospace').padding(10).width('100%').backgroundColor('#f1f3f4').borderRadius(6).margin({ top:6, bottom:6 }) }
+    else if (t.type === TokenType.Q) { Text(t.raw).fontSize(13).fontColor(ThemeColors.colorTextSecondary).fontStyle(FontStyle.Italic).width('100%').border({ width:{left:3}, color:ThemeColors.colorAccentGreen }).padding({ left:10 }).margin({ top:5, bottom:5 }) }
+    else if (t.type === TokenType.HR) { Divider().color(ThemeColors.colorBorderSubtle).margin({ top:12, bottom:12 }).width('100%') }
+    else if (t.type === TokenType.UL || t.type === TokenType.OL) { Column() { ForEach(t.kids, (it: InlineSpan, j: number) => { Row() { Text(t.type===TokenType.OL?(j+1).toString()+'.':'•').fontSize(13).fontColor(ThemeColors.colorTextTertiary).width(22); Text(it.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary) }.width('100%').padding({ top:1, bottom:1 }) }, (it: InlineSpan, j: number): string => 'li_'+i.toString()+'_'+j.toString()) }.width('100%').margin({ top:3, bottom:3 }) }
+    else { Row() { ForEach(t.kids, (s: InlineSpan, idx: number) => {
+      if (s.c) { Text(s.t).fontSize(13).fontColor('#7c3aed').fontFamily('monospace').backgroundColor('#f1f3f4').borderRadius(3).padding({ left:3, right:3, top:1, bottom:1 }) }
+      else if (s.b&&s.i) { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextPrimary).fontWeight(FontWeight.Bold).fontStyle(FontStyle.Italic) }
+      else if (s.b) { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextPrimary).fontWeight(FontWeight.Bold) }
+      else if (s.i) { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary).fontStyle(FontStyle.Italic) }
+      else { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary) }
+    }, (s: InlineSpan, idx: number): string => 'is_'+i.toString()+'_'+idx.toString()) }.width('100%').padding({ top:3, bottom:3 }) }
   }
 
-  // ══ outline ═══════════════════════════════════════
-
-  @Builder OutlinePanel() {
+  @Builder BuildAi() {
     Column() {
-      Row() { Text('大纲').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#111827'); Blank(); Button('×').fontSize(14).fontColor('#6b7280').backgroundColor('#00000000').width(28).height(28).onClick((): void => { this.outlineOn = false }) }.width('100%').padding({ left: 12, right: 8, top: 8, bottom: 6 }).border({ width: { bottom: 1 }, color: '#e5e7eb' })
-      Scroll() {
-        Column() {
-          if (this.oitems.length === 0) { Text('点击底部"大纲"按钮生成').fontSize(12).fontColor('#9ca3af').width('100%').padding(12) }
-          else { ForEach(this.oitems, (it: OItem) => { Text(it.text).fontSize(13).fontColor('#374151').padding({ left: (it.lv - 1) * 14 + 8, top: 4, bottom: 4 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%') }, (it: OItem): string => 'oi_' + it.text + '_' + it.lv.toString()) }
-        }.width('100%').padding(8)
-      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-    }.width(this.rw).height('100%').backgroundColor('#fafbfc').clip(true)
-  }
-
-  // ══ footer ════════════════════════════════════════
-
-  @Builder Footer() {
-    Row() {
-      Text(String(this.files.length) + ' 篇').fontSize(11).fontColor('#6b7280')
-      Blank()
-      if (this.aid) { Text(this.msg || '编辑中').fontSize(11).fontColor(this.msg ? '#3b82f6' : '#9ca3af'); Text('  ·  ').fontSize(11).fontColor('#d1d5db') }
-      Text(this.wc.toString() + ' 字').fontSize(11).fontColor('#6b7280')
-      Text('  ·  ').fontSize(11).fontColor('#d1d5db')
-      Text('大纲').fontSize(11).fontColor('#3b82f6').onClick((): void => { this.outlineOn = !this.outlineOn; this.previewOn = true; if (this.outlineOn) this.doOutline() })
-      Text('  ·  ').fontSize(11).fontColor('#d1d5db')
-      Text('设置').fontSize(11).fontColor('#3b82f6').onClick((): void => { this.dlgSettings = true })
-      Text('  ·  ').fontSize(11).fontColor('#d1d5db')
-      Text('快捷键').fontSize(11).fontColor('#3b82f6').onClick((): void => { this.dlgKeys = true })
-    }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 }).backgroundColor('#f3f4f6')
-  }
-
-  // ══ dialogs ═══════════════════════════════════════
-
-  @Builder Dialog(title: string, txt: string, ph: string, ch: (v: string) => void, ok: () => void, cancel: () => void) {
-    Column() {
+      Row() { Text('AI 对话').fontSize(12).fontWeight(FontWeight.Bold).fontColor(ThemeColors.colorTextPrimary); Blank(); Text('✕').fontSize(14).fontColor(ThemeColors.colorTextTertiary).onClick(() => { this.rightVisible = false; this.saveLayout() }) }
+        .width('100%').padding({ left: 10, right: 6, top: 8, bottom: 5 }).border({ width: { bottom: 1 }, color: ThemeColors.colorBorderSubtle })
       Column() {
-        Text(title).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827').margin({ bottom: 14 })
-        TextInput({ text: txt, placeholder: ph }).fontSize(14).fontColor('#111827').placeholderColor('#9ca3af').backgroundColor('#fff').border({ width: 1, color: '#d1d5db', radius: 8 }).padding(12).onChange(ch)
-        Row() { Button('取消').fontSize(13).backgroundColor('#e5e7eb').fontColor('#374151').borderRadius(8).width('48%').onClick(cancel); Button('确认').fontSize(13).backgroundColor('#3b82f6').fontColor('#fff').borderRadius(8).width('48%').margin({ left: 12 }).onClick(ok) }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 18 })
-      }.padding(24).backgroundColor('#fff').borderRadius(14).width('85%').border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
-    }.width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center).onClick(cancel)
+        Image(IconConstants.IC_CHAT).width(42).height(42).fillColor(ThemeColors.colorBorderDefault).margin({ bottom: 14 })
+        Text('AI 对话 · 即将上线').fontSize(14).fontWeight(FontWeight.Medium).fontColor(ThemeColors.colorTextSecondary)
+        Text('基于笔记内容的智能助手').fontSize(11).fontColor(ThemeColors.colorTextTertiary).margin({ top: 4 })
+      }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+    }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc').border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
   }
 
-  @Builder DlgDelete() {
-    Column() {
-      Column() {
-        Text('删除').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827').margin({ bottom: 6 }); Text(this.delTgt ? '"' + this.delTgt.title + '" 将被永久删除' : '').fontSize(13).fontColor('#6b7280').margin({ bottom: 18 })
-        Row() { Button('取消').fontSize(13).backgroundColor('#e5e7eb').fontColor('#374151').borderRadius(8).width('48%').onClick((): void => { this.dlgDelete = false }); Button('删除').fontSize(13).backgroundColor('#ef4444').fontColor('#fff').borderRadius(8).width('48%').margin({ left: 12 }).onClick((): void => { this.doDelete() }) }.width('100%').justifyContent(FlexAlign.Center)
-      }.padding(24).backgroundColor('#fff').borderRadius(14).width('85%').border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
-    }.width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center).onClick((): void => { this.dlgDelete = false })
-  }
+  private fmtRel(ms: number): string { const d: number = Date.now() - ms; if (d < 60000) return '刚刚'; if (d < 3600000) return Math.floor(d/60000)+' 分钟前'; if (d < 86400000) return Math.floor(d/3600000)+' 小时前'; return formatTime(ms) }
 
-  @Builder DlgSettings() {
-    Column() {
-      Column() {
-        Row() { Text('设置').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827'); Blank(); Button('×').fontSize(18).fontColor('#6b7280').backgroundColor('#00000000').width(32).height(32).onClick((): void => { this.dlgSettings = false }) }.width('100%').margin({ bottom: 16 })
-        Text('编辑器字体大小').fontSize(13).fontColor('#6b7280').margin({ bottom: 8 }).width('100%')
-        Row() { Button('-').fontSize(14).backgroundColor('#e5e7eb').fontColor('#374151').borderRadius(6).width(36).height(36).onClick((): void => { if (this.fontSize > 10) this.fontSize = this.fontSize - 1 }); Text(this.fontSize.toString()).fontSize(20).fontWeight(FontWeight.Bold).fontColor('#111827').margin({ left: 12, right: 12 }); Button('+').fontSize(14).backgroundColor('#e5e7eb').fontColor('#374151').borderRadius(6).width(36).height(36).onClick((): void => { if (this.fontSize < 28) this.fontSize = this.fontSize + 1 }) }.width('100%').justifyContent(FlexAlign.Center)
-        Text('调整编辑区字号 (10~28). 修改后立即生效.').fontSize(11).fontColor('#9ca3af').margin({ top: 8 })
-        Divider().color('#e5e7eb').margin({ top: 14, bottom: 14 })
-        Button('关闭').fontSize(13).backgroundColor('#e5e7eb').fontColor('#374151').borderRadius(8).width('100%').height(40).onClick((): void => { this.dlgSettings = false })
-      }.padding(24).backgroundColor('#fff').borderRadius(14).width('85%').border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
-    }.width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center).onClick((): void => { this.dlgSettings = false })
+  private getSnippet(fileId: string, query: string): string {
+    const c: string | undefined = this.contentCache.get(fileId); if (!c || c.length === 0) return ''
+    const q: string = query.trim().toLowerCase(); const idx: number = c.toLowerCase().indexOf(q)
+    if (idx < 0) return ''; const s: number = Math.max(0, idx - 30); const e: number = Math.min(c.length, idx + q.length + 30)
+    let snip: string = c.slice(s, e); if (s > 0) snip = '...' + snip; if (e < c.length) snip = snip + '...'; return snip
   }
-
-  @Builder DlgKeys() {
-    Column() {
-      Column() {
-        Row() { Text('键盘快捷键').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#111827'); Blank(); Button('×').fontSize(18).fontColor('#6b7280').backgroundColor('#00000000').width(32).height(32).onClick((): void => { this.dlgKeys = false }) }.width('100%').margin({ bottom: 16 })
-        this.KR('Ctrl+S', '保存笔记'); this.KR('Ctrl+Z', '撤销'); this.KR('Ctrl+Y', '重做')
-        Divider().color('#e5e7eb').margin({ top: 8, bottom: 8 })
-        Text('编辑区纯 Markdown 语法输入, 实时预览自动更新').fontSize(11).fontColor('#9ca3af')
-      }.padding(24).backgroundColor('#fff').borderRadius(14).width('85%').border({ width: 1, color: '#e5e7eb' }).shadow({ radius: 16, color: '#00000010' })
-    }.width('100%').height('100%').backgroundColor('#00000030').justifyContent(FlexAlign.Center).onClick((): void => { this.dlgKeys = false })
-  }
-
-  @Builder KR(k: string, d: string) { Row() { Text(k).fontSize(12).fontWeight(FontWeight.Bold).fontColor('#3b82f6').fontFamily('monospace').backgroundColor('#eff6ff').borderRadius(4).padding({ left: 8, right: 8, top: 2, bottom: 2 }).width(100); Text(d).fontSize(13).fontColor('#374151').margin({ left: 12 }) }.width('100%').padding({ top: 3, bottom: 3 }) }
 }
