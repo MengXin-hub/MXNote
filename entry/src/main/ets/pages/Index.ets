@@ -4,11 +4,11 @@
  * 三面板: 左(FileTreePanel) | 中(EditorArea+Footer) | 右(预览/大纲/AI)
  * 上下文菜单: 文件/文件夹长按 → 重命名/删除
  */
-import { ThemeColors, ThemeFontSize, LayoutConstants } from '../constants/ThemeConstants'
+import { ThemeColors} from '../constants/ThemeConstants'
 import { IconConstants } from '../constants/IconConstants'
 import { FileManager } from '../core/FileManager'
 import { FileSystemManager } from '../core/FileSystemManager'
-import { NoteFile, Folder, formatTime } from '../model/NoteFile'
+import { NoteFile, Folder} from '../model/NoteFile'
 import { MarkdownToken, TokenType, InlineSpan } from '../core/MarkdownParser'
 import { Result, AppError } from '../model/Result'
 import { preferences } from '@kit.ArkData'
@@ -404,7 +404,7 @@ struct Index {
       Scroll() {
         Column() {
           if (!this.previewReady || this.tokens.length === 0) { Text('保存后自动生成预览').fontSize(11).fontColor(ThemeColors.colorTextTertiary).width('100%').padding(10) }
-          else { ForEach(this.tokens, (t: MarkdownToken, i: number) => { this.Block(t, i) }, (t: MarkdownToken, i: number): string => 'b_' + i.toString()) }
+          else { ForEach(this.tokens, (t: MarkdownToken, i: number) => { this.Block(t, i) }) }
         }.width('100%').padding(10)
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
     }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc').border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
@@ -415,14 +415,14 @@ struct Index {
     else if (t.type === TokenType.C) { Text(t.raw).fontSize(12).fontColor(ThemeColors.colorTextSecondary).fontFamily('monospace').padding(10).width('100%').backgroundColor('#f1f3f4').borderRadius(6).margin({ top: 6, bottom: 6 }) }
     else if (t.type === TokenType.Q) { Text(t.raw).fontSize(13).fontColor(ThemeColors.colorTextSecondary).fontStyle(FontStyle.Italic).width('100%').border({ width: { left: 3 }, color: ThemeColors.colorAccentGreen }).padding({ left: 10 }).margin({ top: 5, bottom: 5 }) }
     else if (t.type === TokenType.HR) { Divider().color(ThemeColors.colorBorderSubtle).margin({ top: 12, bottom: 12 }).width('100%') }
-    else if (t.type === TokenType.UL || t.type === TokenType.OL) { Column() { ForEach(t.kids, (it: InlineSpan, j: number) => { Row() { Text(t.type === TokenType.OL ? (j + 1).toString() + '.' : '•').fontSize(13).fontColor(ThemeColors.colorTextTertiary).width(22); Text(it.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary) }.width('100%').padding({ top: 1, bottom: 1 }) }, (it: InlineSpan, j: number): string => 'li_' + i.toString() + '_' + j.toString()) }.width('100%').margin({ top: 3, bottom: 3 }) }
-    else { Row() { ForEach(t.kids, (s: InlineSpan, idx: number) => {
+    else if (t.type === TokenType.UL || t.type === TokenType.OL) { Column() { ForEach(t.kids, (it: InlineSpan, j: number) => { Row() { Text(t.type === TokenType.OL ? (j + 1).toString() + '.' : '•').fontSize(13).fontColor(ThemeColors.colorTextTertiary).width(22); Text(it.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary) }.width('100%').padding({ top: 1, bottom: 1 }) }) }.width('100%').margin({ top: 3, bottom: 3 }) }
+    else { Row() { ForEach(t.kids, (s: InlineSpan) => {
       if (s.c) { Text(s.t).fontSize(13).fontColor('#7c3aed').fontFamily('monospace').backgroundColor('#f1f3f4').borderRadius(3).padding({ left: 3, right: 3, top: 1, bottom: 1 }) }
       else if (s.b && s.i) { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextPrimary).fontWeight(FontWeight.Bold).fontStyle(FontStyle.Italic) }
       else if (s.b) { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextPrimary).fontWeight(FontWeight.Bold) }
       else if (s.i) { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary).fontStyle(FontStyle.Italic) }
       else { Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary) }
-    }, (s: InlineSpan, idx: number): string => 'is_' + i.toString() + '_' + idx.toString()) }.width('100%').padding({ top: 3, bottom: 3 }) }
+    }, (idx: number): string => 'is_' + i.toString() + '_' + idx.toString()) }.width('100%').padding({ top: 3, bottom: 3 }) }
   }
 
   // 大纲
@@ -452,12 +452,12 @@ struct Index {
     }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc').border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
   }
 
-  private fmtRel(ms: number): string { const d: number = Date.now() - ms; if (d < 60000) return '刚刚'; if (d < 3600000) return Math.floor(d / 60000) + ' 分钟前'; if (d < 86400000) return Math.floor(d / 3600000) + ' 小时前'; return formatTime(ms) }
+  // private fmtRel(ms: number): string { const d: number = Date.now() - ms; if (d < 60000) return '刚刚'; if (d < 3600000) return Math.floor(d / 60000) + ' 分钟前'; if (d < 86400000) return Math.floor(d / 3600000) + ' 小时前'; return formatTime(ms) }
 
-  private getSnippet(fileId: string, query: string): string {
-    const c: string | undefined = this.contentCache.get(fileId); if (!c || c.length === 0) return ''
-    const q: string = query.trim().toLowerCase(); const idx: number = c.toLowerCase().indexOf(q)
-    if (idx < 0) return ''; const s: number = Math.max(0, idx - 30); const e: number = Math.min(c.length, idx + q.length + 30)
-    let snip: string = c.slice(s, e); if (s > 0) snip = '...' + snip; if (e < c.length) snip = snip + '...'; return snip
-  }
+  // private getSnippet(fileId: string, query: string): string {
+  //   const c: string | undefined = this.contentCache.get(fileId); if (!c || c.length === 0) return ''
+  //   const q: string = query.trim().toLowerCase(); const idx: number = c.toLowerCase().indexOf(q)
+  //   if (idx < 0) return ''; const s: number = Math.max(0, idx - 30); const e: number = Math.min(c.length, idx + q.length + 30)
+  //   let snip: string = c.slice(s, e); if (s > 0) snip = '...' + snip; if (e < c.length) snip = snip + '...'; return snip
+  // }
 }
