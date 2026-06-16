@@ -451,13 +451,4 @@ struct Index {
       }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
     }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc').border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
   }
-
-  // private fmtRel(ms: number): string { const d: number = Date.now() - ms; if (d < 60000) return '刚刚'; if (d < 3600000) return Math.floor(d / 60000) + ' 分钟前'; if (d < 86400000) return Math.floor(d / 3600000) + ' 小时前'; return formatTime(ms) }
-
-  // private getSnippet(fileId: string, query: string): string {
-  //   const c: string | undefined = this.contentCache.get(fileId); if (!c || c.length === 0) return ''
-  //   const q: string = query.trim().toLowerCase(); const idx: number = c.toLowerCase().indexOf(q)
-  //   if (idx < 0) return ''; const s: number = Math.max(0, idx - 30); const e: number = Math.min(c.length, idx + q.length + 30)
-  //   let snip: string = c.slice(s, e); if (s > 0) snip = '...' + snip; if (e < c.length) snip = snip + '...'; return snip
-  // }
 }
