@@ -136,9 +136,25 @@ export class FileSystemManager {
       return err(new AppError(ErrorCode.STORAGE_READ_FAILED, 'File not found: ' + id))
     }
 
-    const contentResult: Result<string, AppError> = this.readTextFile('mxnote/notes/' + id + '.md')
+    // 根据 folderId 构造正确的 .md 文件路径
+    let mdPath: string
+    if (entry.folderId) {
+      mdPath = NOTES_DIR + '/' + entry.folderId + '/' + id + '.md'
+    } else {
+      mdPath = NOTES_DIR + '/' + id + '.md'
+    }
+
+    const contentResult: Result<string, AppError> = this.readTextFile(mdPath)
     if (!contentResult.isOk()) {
-      return err(contentResult.getError()!)
+      // 回退: 尝试根目录路径 (兼容旧数据)
+      const fallbackResult: Result<string, AppError> = this.readTextFile(NOTES_DIR + '/' + id + '.md')
+      if (!fallbackResult.isOk()) {
+        return err(contentResult.getError()!)
+      }
+      return ok(new NoteFile(
+        entry.id, entry.title, fallbackResult.getValue()!,
+        entry.createdAt, entry.modifiedAt, entry.folderId
+      ))
     }
 
     return ok(new NoteFile(
@@ -154,8 +170,20 @@ export class FileSystemManager {
   saveFile(id: string, title: string, content: string): Result<void, AppError> {
     const now: number = Date.now()
 
-    const writeResult: Result<void, AppError> =
-      this.writeTextFileWithRetry('mxnote/notes/' + id + '.md', content)
+    // 从 index 中查找 folderId 以确定正确路径
+    let mdPath: string = NOTES_DIR + '/' + id + '.md'
+    const idxCheck: Result<IndexEntry[], AppError> = this.readIndex()
+    if (idxCheck.isOk()) {
+      const idxEntries: IndexEntry[] = idxCheck.getValue()!
+      for (let i: number = 0; i < idxEntries.length; i++) {
+        if (idxEntries[i].id === id && idxEntries[i].folderId) {
+          mdPath = NOTES_DIR + '/' + idxEntries[i].folderId + '/' + id + '.md'
+          break
+        }
+      }
+    }
+
+    const writeResult: Result<void, AppError> = this.writeTextFileWithRetry(mdPath, content)
     if (!writeResult.isOk()) {
       return err(writeResult.getError()!)
     }
