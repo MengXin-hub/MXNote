@@ -259,6 +259,9 @@ export class FileSystemManager {
   // 文件夹操作
   // ═══════════════════════════════════════════════════════
 
+  /**
+   * 创建文件夹: 创建物理目录 + 写入 .name 元数据文件。
+   */
   createFolder(name: string, parentId: string | null = null): Result<Folder, AppError> {
     const id: string = 'folder_' + generateId()
     const now: number = Date.now()
@@ -270,39 +273,133 @@ export class FileSystemManager {
       dirRelativePath = NOTES_DIR + '/' + id
     }
 
-    // 递归创建目录
     const mkResult: Result<void, AppError> = this.mkdirRecursive(dirRelativePath)
     if (!mkResult.isOk()) {
       return err(mkResult.getError()!)
     }
 
+    // 写入 .name 文件 —— 文件夹显示名唯一持久化来源
+    const nameFile: string = dirRelativePath + '/.name'
+    const wResult: Result<void, AppError> = this.writeTextFile(nameFile, name)
+    if (!wResult.isOk()) {
+      // 回滚
+      try { fs.rmdirSync(this.basePath + '/' + dirRelativePath) } catch (e) {}
+      return err(wResult.getError()!)
+    }
+
     return ok(new Folder(id, name, parentId, now))
   }
 
+  /**
+   * 重命名文件夹: 更新 .name 文件内容。
+   */
+  renameFolder(id: string, newName: string): Result<void, AppError> {
+    const nameFile: string = NOTES_DIR + '/' + id + '/.name'
+    return this.writeTextFileWithRetry(nameFile, newName)
+  }
+
+  /**
+   * 删除文件夹: 递归删除目录内容 + 将子文件 folderId 置 null。
+   */
+  deleteFolder(id: string): Result<void, AppError> {
+    const fdPath: string = NOTES_DIR + '/' + id
+    const fullPath: string = this.basePath + '/' + fdPath
+    try {
+      this.removeDirRecursive(fullPath)
+    } catch (e) {
+      return err(new AppError(ErrorCode.STORAGE_WRITE_FAILED, 'Failed to delete folder'))
+    }
+    // 将文件夹内的文件移出文件夹
+    const idxResult: Result<IndexEntry[], AppError> = this.readIndex()
+    if (idxResult.isOk()) {
+      const index: IndexEntry[] = idxResult.getValue()!
+      let changed: boolean = false
+      for (let i: number = 0; i < index.length; i++) {
+        if (index[i].folderId === id) { index[i].folderId = null; changed = true }
+      }
+      if (changed) this.writeIndexWithRetry(index)
+    }
+    return ok(undefined)
+  }
+
+  /**
+   * 列出所有文件夹，从 .name 文件读取显示名称。
+   */
   listFolders(): Result<Folder[], AppError> {
     try {
       const folders: Folder[] = []
       const notesPath: string = this.basePath + '/' + NOTES_DIR
-      // ensure notes dir exists
       try { fs.statSync(notesPath) } catch (e) { return ok([]) }
 
       const dir: string[] = fs.listFileSync(notesPath)
       for (let i: number = 0; i < dir.length; i++) {
-        const name: string = dir[i]
-        const fullPath: string = notesPath + '/' + name
+        const dirName: string = dir[i]
+        const fullPath: string = notesPath + '/' + dirName
         try {
           const stat: fs.Stat = fs.statSync(fullPath)
-          if (stat.isDirectory()) {
-            folders.push(new Folder(name, name, null, 0))
+          if (!stat.isDirectory()) continue
+          // 读取 .name 文件获取显示名
+          const nameFile: string = fullPath + '/.name'
+          let displayName: string = dirName
+          try {
+            displayName = fs.readTextSync(nameFile).trim()
+          } catch (e) {
+            // .name 缺失时回退到目录名
           }
-        } catch (e) {
-          // skip
-        }
+          folders.push(new Folder(dirName, displayName, null, 0))
+        } catch (e) { /* skip */ }
       }
       return ok(folders)
     } catch (e) {
       return ok([])
     }
+  }
+
+  /**
+   * 将文件移动到指定文件夹。
+   */
+  moveFileToFolder(fileId: string, targetFolderId: string | null): Result<void, AppError> {
+    const idxResult: Result<IndexEntry[], AppError> = this.readIndex()
+    if (!idxResult.isOk()) return err(idxResult.getError()!)
+    const index: IndexEntry[] = idxResult.getValue()!
+    let found: boolean = false
+    for (let i: number = 0; i < index.length; i++) {
+      if (index[i].id === fileId) { index[i].folderId = targetFolderId; found = true; break }
+    }
+    if (!found) {
+      return err(new AppError(ErrorCode.STORAGE_READ_FAILED, 'File not found: ' + fileId))
+    }
+    // 移动 .md 文件
+    const srcPath: string = NOTES_DIR + '/' + fileId + '.md'
+    let dstPath: string
+    if (targetFolderId) {
+      this.mkdirRecursive(NOTES_DIR + '/' + targetFolderId)
+      dstPath = NOTES_DIR + '/' + targetFolderId + '/' + fileId + '.md'
+    } else {
+      dstPath = NOTES_DIR + '/' + fileId + '.md'
+    }
+    if (srcPath !== dstPath) {
+      try {
+        fs.renameSync(this.basePath + '/' + srcPath, this.basePath + '/' + dstPath)
+      } catch (e) { /* 文件可能不在原位置，忽略 */ }
+    }
+    return this.writeIndexWithRetry(index)
+  }
+
+  /** 递归删除目录及其内容 */
+  private removeDirRecursive(fullPath: string): void {
+    try {
+      const entries: string[] = fs.listFileSync(fullPath)
+      for (let i: number = 0; i < entries.length; i++) {
+        const entryPath: string = fullPath + '/' + entries[i]
+        try {
+          const stat: fs.Stat = fs.statSync(entryPath)
+          if (stat.isDirectory()) { this.removeDirRecursive(entryPath) }
+          else { fs.unlinkSync(entryPath) }
+        } catch (e) { try { fs.unlinkSync(entryPath) } catch (e2) {} }
+      }
+      fs.rmdirSync(fullPath)
+    } catch (e) { try { fs.rmdirSync(fullPath) } catch (e2) {} }
   }
 
   /** 递归创建目录: 从根开始逐级创建 */

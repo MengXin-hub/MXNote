@@ -1,84 +1,42 @@
 /**
- * TitleBar — 顶部全局栏。
+ * TitleBar — 紧接系统标题栏下方。
  *
- * 布局（从左到右）:
- *   搜索框(居中) · 显示左面板 · 显示右面板 · 设置
+ * 布局: [Logo] [☰]  ···  [Search居中]  ···
+ * 高度 44vp, 与上方系统标题栏(56vp)共同组成100vp顶部区域
  *
- * 所有尺寸/间距通过本文件顶部的常量统一控制，可直接修改。
+ * MXNote 文字由系统标题栏 setWindowTitle('MXNote') 显示, 与三键同行
  */
-import { ThemeColors, ThemeFontSize } from '../../constants/ThemeConstants'
+import { ThemeColors } from '../../constants/ThemeConstants'
 import { IconConstants } from '../../constants/IconConstants'
 
-// ── 可调整布局参数 ──
-const SEARCH_WIDTH: number = 360    // 搜索框最大宽度 vp
-const SEARCH_HEIGHT: number = 34    // 搜索框高度 vp
-const BTN_GAP: number = 2           // 按钮间隔
-const BTN_PADDING: number = 6       // 按钮内边距
-const ICON_SIZE: number = 18        // 图标尺寸 vp
-const BAR_PADDING_V: number = 5     // 垂直内边距
-const BAR_PADDING_H: number = 10    // 水平内边距
+const BAR_HEIGHT: number = 44
 
 @Component
 export struct TitleBar {
   @Link searchQuery: string
   @Prop leftVisible: boolean = true
-  @Prop rightVisible: boolean = true
   onSearchChange?: (v: string) => void
   onLeftToggle?: () => void
-  onRightToggle?: () => void
-  onSettingsClick?: () => void
+  onLogoSettings?: () => void
 
   build() {
     Row() {
-      Blank()
-
-      // ══ 居中搜索框 ════════════════════════════
-      Row() {
-        Image(IconConstants.IC_SEARCH).width(14).height(14)
-          .fillColor(ThemeColors.colorTextTertiary).margin({ left: 10, right: 6 })
-        TextInput({ text: $$this.searchQuery, placeholder: '搜索笔记...' })
-          .fontSize(ThemeFontSize.bodySmall).fontColor(ThemeColors.colorTextPrimary)
-          .placeholderColor(ThemeColors.colorTextTertiary).backgroundColor('#00000000')
-          .height(SEARCH_HEIGHT).layoutWeight(1).borderRadius(0)
-          .onChange((v: string) => {
-            this.searchQuery = v
-            if (this.onSearchChange) this.onSearchChange(v)
-          })
-        if (this.searchQuery.length > 0) {
-          Image(IconConstants.IC_CLOSE).width(12).height(12)
-            .fillColor(ThemeColors.colorTextTertiary).margin({ right: 8 })
-            .onClick(() => {
-              this.searchQuery = ''
-              if (this.onSearchChange) this.onSearchChange('')
-            })
-        }
-      }
-      .width(SEARCH_WIDTH).height(SEARCH_HEIGHT)
-      .backgroundColor(ThemeColors.colorBgHover)
-      .borderRadius(17).border({ width: 1, color: ThemeColors.colorBorderSubtle })
+      Image($r('app.media.startIcon')).width(22).height(22).borderRadius(4).margin({ right: 6 })
+        .onClick(() => { if (this.onLogoSettings) this.onLogoSettings() })
+      Image(IconConstants.IC_SIDEBAR).width(18).height(18)
+        .fillColor(this.leftVisible ? ThemeColors.colorAccentBlue : ThemeColors.colorTextSecondary)
+        .padding(5).onClick(() => { if (this.onLeftToggle) this.onLeftToggle() })
 
       Blank()
 
-      // ══ 右侧按钮 ════════════════════════════
-      Row({ space: BTN_GAP }) {
-        Image(IconConstants.IC_SIDEBAR).width(ICON_SIZE).height(ICON_SIZE)
-          .fillColor(this.leftVisible ? ThemeColors.colorAccentBlue : ThemeColors.colorTextSecondary)
-          .padding(BTN_PADDING)
-          .onClick(() => { if (this.onLeftToggle) this.onLeftToggle() })
+      Search({ value: $$this.searchQuery, placeholder: '搜索笔记...' })
+        .width(340).height(34).borderRadius(17)
+        .onChange((v: string) => { this.searchQuery = v; if (this.onSearchChange) this.onSearchChange(v) })
+        .onSubmit((v: string) => { if (this.onSearchChange) this.onSearchChange(v) })
 
-        Image(IconConstants.IC_SIDEBAR).width(ICON_SIZE).height(ICON_SIZE)
-          .fillColor(this.rightVisible ? ThemeColors.colorAccentBlue : ThemeColors.colorTextSecondary)
-          .padding(BTN_PADDING)
-          .onClick(() => { if (this.onRightToggle) this.onRightToggle() })
-
-        Image(IconConstants.IC_SETTINGS).width(ICON_SIZE).height(ICON_SIZE)
-          .fillColor(ThemeColors.colorTextSecondary)
-          .padding(BTN_PADDING)
-          .onClick(() => { if (this.onSettingsClick) this.onSettingsClick() })
-      }
+      Blank()
     }
-    .width('100%')
-    .padding({ left: BAR_PADDING_H, right: BAR_PADDING_H, top: BAR_PADDING_V, bottom: BAR_PADDING_V })
+    .width('100%').height(BAR_HEIGHT).padding({ left: 12, right: 12 })
     .backgroundColor(ThemeColors.colorBgCanvas)
     .border({ width: { bottom: 1 }, color: ThemeColors.colorBorderSubtle })
   }

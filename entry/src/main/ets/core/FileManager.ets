@@ -65,4 +65,16 @@ export class FileManager {
   async listFolders(): Promise<Result<Folder[], AppError>> {
     return Promise.resolve(this.fsm.listFolders())
   }
+
+  async renameFolder(id: string, newName: string): Promise<Result<void, AppError>> {
+    return Promise.resolve(this.fsm.renameFolder(id, newName))
+  }
+
+  async deleteFolder(id: string): Promise<Result<void, AppError>> {
+    return Promise.resolve(this.fsm.deleteFolder(id))
+  }
+
+  async moveFileToFolder(fileId: string, folderId: string | null): Promise<Result<void, AppError>> {
+    return Promise.resolve(this.fsm.moveFileToFolder(fileId, folderId))
+  }
 }

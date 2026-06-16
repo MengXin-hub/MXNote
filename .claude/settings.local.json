@@ -124,11 +124,19 @@
       "Bash(rm -v entry/src/main/ets/pages/components/MarkListView.ets)",
       "Bash(rm -v entry/src/main/ets/pages/components/MarkdownEditor.ets)",
       "Bash(rmdir entry/src/main/ets/richeditor/common entry/src/main/ets/richeditor/model entry/src/main/ets/richeditor/controller entry/src/main/ets/richeditor/components entry/src/main/ets/richeditor entry/src/main/ets/utils 2>/dev/null *)",
-      "Bash(rm -v entry/src/ohosTest/ets/test/SyncManager.test.ets 2>/dev/null *)"
+      "Bash(rm -v entry/src/ohosTest/ets/test/SyncManager.test.ets 2>/dev/null *)",
+      "Bash(mkdir -p entry/src/main/ets/utils entry/src/main/ets/services entry/src/main/ets/pages/components 2>/dev/null *)",
+      "Bash(cd \"\\\\\\\\hwfs\\\\HMOS_文档\\(默认\\)\\\\Code\\\\MXNote\")",
+      "Bash(ohpm install *)",
+      "Bash(rm entry/src/main/ets/services/MarkdownService.ets 2>/dev/null && echo \"Deleted MarkdownService.ets\" || echo \"Could not delete\")",
+      "Bash(rm entry/src/main/ets/pages/components/FormatToolbar.ets entry/src/main/ets/services/ImageInserter.ets entry/src/main/ets/utils/MarkdownUtils.ets)",
+      "Bash(rmdir entry/src/main/ets/utils)"
     ],
     "additionalDirectories": [
       "\\\\hwfs\\HMOS_文档(默认)\\Code\\MXNote\\entry\\src\\main\\ets\\richeditor",
-      "\\\\hwfs\\HMOS_文档(默认)\\Code\\MXNote\\entry\\src\\ohosTest\\ets\\test"
+      "\\\\hwfs\\HMOS_文档(默认)\\Code\\MXNote\\entry\\src\\ohosTest\\ets\\test",
+      "\\\\hwfs\\HMOS_文档(默认)\\Code\\MXNote\\entry\\src\\main\\ets",
+      "\\\\hwfs\\HMOS_文档(默认)\\Code\\MXNote\\entry\\src\\main\\ets\\services"
     ]
   }
 }
