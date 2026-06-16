@@ -1,9 +1,11 @@
 {
   "name": "entry",
   "version": "1.0.0",
-  "description": "Please describe the basic information.",
+  "description": "MXNote - HarmonyOS 原生 Markdown 笔记应用",
   "main": "",
   "author": "",
   "license": "",
-  "dependencies": {}
+  "dependencies": {
+    "@luvi/lv-markdown-in": "^2.0.3"
+  }
 }

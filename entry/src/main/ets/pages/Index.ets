@@ -1,9 +1,9 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- * ║  Index — MXNote 主页面                                       ║
+ * ║  Index — MXNote 主页面                                        ║
  * ║                                                              ║
  * ║  布局: [TitleBar] [LeftPanel | Editor+Tabs | RightPanel]      ║
- * ║  三面板可拖拽 · 多标签编辑器            ║
+ * ║  三面板可拖拽 · 多标签编辑器                                     ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 import { ThemeColors } from '../constants/ThemeConstants'
@@ -15,6 +15,7 @@ import { MarkdownToken, TokenType, InlineSpan } from '../core/MarkdownParser'
 import { Result, AppError } from '../model/Result'
 import { preferences } from '@kit.ArkData'
 import { MarkdownParser } from '../core/MarkdownParser'
+import { LvMarkdownIn, mdRegister } from '@luvi/lv-markdown-in'
 import { ExportService } from '../services/ExportService'
 import { ImportService, ImportResult } from '../services/ImportService'
 import { TitleBar } from './components/TitleBar'
@@ -26,9 +27,9 @@ import { EditorArea } from './components/EditorArea'
 // ═══════════════════ 布局可调常量 ═══════════════════
 namespace LAYOUT {
   export const MIN_PANEL: number = 100
-  export const MAX_PANEL: number = 600
+  export const MAX_PANEL: number = 900
   export const LEFT_DEFAULT: number = 100
-  export const RIGHT_DEFAULT: number = 300
+  export const RIGHT_DEFAULT: number = 700
   export const DIVIDER_W: number = 3
   export const FOOTER_H: number = 30  // 底部统计栏高度
   export const TAB_H: number = 30     // 多标签栏高度
@@ -72,8 +73,8 @@ struct Index {
   @State previewReady: boolean = false
 
   // ─────────── 面板状态 ───────────
-  @State leftVisible: boolean = true
-  @State rightVisible: boolean = true
+  @State leftVisible: boolean = false
+  @State rightVisible: boolean = false
   @State rightPanel: string = 'preview'  // 'preview' | 'outline' | 'ai'
   @State leftWidth: number = LAYOUT.LEFT_DEFAULT
   @State rightWidth: number = LAYOUT.RIGHT_DEFAULT
@@ -101,6 +102,8 @@ struct Index {
   // ─────────── 拖拽状态 ───────────
   private dragBaseLeft: number = 0
   private dragBaseRight: number = 0
+  @State leftDividerHover: boolean = false
+  @State rightDividerHover: boolean = false
 
   // ═══════════════════════════════════════════════════════
   //  §1 生命周期
@@ -113,6 +116,31 @@ struct Index {
       this.fm = new FileManager(h)
       this.fsm = this.fm.getFileSystemManager()
       this.isReady = true
+
+      // 注册预览区超链接点击拦截 — 实现笔记内链跳转
+      const self: Index = this
+      mdRegister.HandleHyperlink = (url: string): boolean => {
+        if (!url || url.length === 0) return true
+        // 外部链接交给浏览器处理
+        if (url.startsWith('http://') || url.startsWith('https://')) return true
+        // 去掉 .md 后缀，尝试按标题匹配笔记文件
+        const target: string = url.endsWith('.md') ? url.slice(0, -3) : url
+        for (let i: number = 0; i < self.files.length; i++) {
+          if (self.files[i].title === target || self.files[i].title === url) {
+            self.openFile(self.files[i].id)
+            return false  // 已拦截
+          }
+        }
+        // 未匹配到笔记，尝试按 ID 直接打开
+        for (let i: number = 0; i < self.files.length; i++) {
+          if (self.files[i].id === target) {
+            self.openFile(self.files[i].id)
+            return false
+          }
+        }
+        return true  // 无匹配，走默认行为
+      }
+
       setTimeout(() => { this.initApp() }, 0)  // 延迟加载让首帧渲染
     }
   }
@@ -128,8 +156,6 @@ struct Index {
       if (l) {
         this.leftWidth = l.leftWidth || LAYOUT.LEFT_DEFAULT
         this.rightWidth = l.rightWidth || LAYOUT.RIGHT_DEFAULT
-        this.leftVisible = l.leftVisible !== false
-        this.rightVisible = l.rightVisible !== false
       }
     }
     await this.reloadFiles()
@@ -542,7 +568,9 @@ struct Index {
 
           // 左分隔条
           if (this.leftVisible) {
-            Column().width(LAYOUT.DIVIDER_W).height('100%').backgroundColor('#d0d0d0')
+            Column().width(LAYOUT.DIVIDER_W).height('100%')
+              .backgroundColor(this.leftDividerHover ? ThemeColors.colorAccentBlue : '#d0d0d0')
+              .onHover((isHover: boolean) => { this.leftDividerHover = isHover })
               .gesture(PanGesture({ direction: PanDirection.Horizontal })
                 .onActionStart((): void => { this.onLeftDragStart() })
                 .onActionUpdate((ev: GestureEvent): void => { this.onLeftDragUpdate(ev) }))
@@ -638,7 +666,9 @@ struct Index {
 
           // 右分隔条
           if (this.rightVisible) {
-            Column().width(LAYOUT.DIVIDER_W).height('100%').backgroundColor('#d0d0d0')
+            Column().width(LAYOUT.DIVIDER_W).height('100%')
+              .backgroundColor(this.rightDividerHover ? ThemeColors.colorAccentBlue : '#d0d0d0')
+              .onHover((isHover: boolean) => { this.rightDividerHover = isHover })
               .gesture(PanGesture({ direction: PanDirection.Horizontal })
                 .onActionStart((): void => { this.onRightDragStart() })
                 .onActionUpdate((ev: GestureEvent): void => { this.onRightDragUpdate(ev) }))
@@ -722,107 +752,18 @@ struct Index {
       }.width('100%').padding({ left: 10, right: 6, top: 8, bottom: 5 })
       .border({ width: { bottom: 1 }, color: ThemeColors.colorBorderSubtle })
 
-      Scroll() {
-        Column() {
-          if (!this.previewReady || this.tokens.length === 0) {
-            Text('保存后自动生成预览').fontSize(11).fontColor(ThemeColors.colorTextTertiary).width('100%').padding(10)
-          } else {
-            ForEach(this.tokens, (t: MarkdownToken, i: number) => {
-              this.BlockContent(t, i)
-            }, (t: MarkdownToken, i: number): string => 'pb_' + i.toString())
-          }
-        }.width('100%').padding(10)
-      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      if (this.activeTabIdx >= 0 && this.tabs.length > 0 && this.activeTabIdx < this.tabs.length) {
+        // ── @luvi/lv-markdown-in 原生渲染引擎 ──
+        LvMarkdownIn({ text: this.tabs[this.activeTabIdx].content })
+          .width('100%').layoutWeight(1)
+      } else {
+        Text('打开文件后自动预览').fontSize(11).fontColor(ThemeColors.colorTextTertiary)
+          .width('100%').padding(10)
+      }
     }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc')
     .border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
   }
 
-  /** 根据 TokenType 分发渲染 */
-  @Builder BlockContent(t: MarkdownToken, i: number) {
-    if (t.type === TokenType.H) {
-      Text(t.kids.map((s: InlineSpan): string => s.t).join(''))
-        .fontSize(Math.max(14, 28 - t.lv * 3)).fontWeight(FontWeight.Bold)
-        .fontColor(ThemeColors.colorTextPrimary).padding({ top: 10, bottom: 2 }).width('100%')
-    } else if (t.type === TokenType.C) {
-      Text(t.raw).fontSize(12).fontColor(ThemeColors.colorTextSecondary).fontFamily('monospace')
-        .padding(10).width('100%').backgroundColor('#f1f3f4').borderRadius(6).margin({ top: 6, bottom: 6 })
-    } else if (t.type === TokenType.MERMAID) {
-      Column() {
-        Text('┌─ Mermaid ─┐').fontSize(10).fontColor(ThemeColors.colorTextTertiary).width('100%')
-        Text(t.raw).fontSize(11).fontColor(ThemeColors.colorTextSecondary).fontFamily('monospace')
-          .padding(10).width('100%').backgroundColor('#e8f5e9').borderRadius(6)
-        Text('└──────────┘').fontSize(10).fontColor(ThemeColors.colorTextTertiary).width('100%')
-      }.margin({ top: 8, bottom: 8 })
-    } else if (t.type === TokenType.TB) {
-      this.TableContent(t)
-    } else if (t.type === TokenType.Q) {
-      Text(t.raw).fontSize(13).fontColor(ThemeColors.colorTextSecondary).fontStyle(FontStyle.Italic)
-        .width('100%').border({ width: { left: 3 }, color: ThemeColors.colorAccentGreen })
-        .padding({ left: 10 }).margin({ top: 5, bottom: 5 })
-    } else if (t.type === TokenType.HR) {
-      Divider().color(ThemeColors.colorBorderSubtle).margin({ top: 12, bottom: 12 }).width('100%')
-    } else if (t.type === TokenType.UL || t.type === TokenType.OL) {
-      Column() {
-        ForEach(t.kids, (it: InlineSpan, j: number) => {
-          Row() {
-            Text(t.type === TokenType.OL ? (j + 1).toString() + '.' : '•')
-              .fontSize(13).fontColor(ThemeColors.colorTextTertiary).width(22)
-            Text(it.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary)
-          }.width('100%').padding({ top: 1, bottom: 1 })
-        }, (it: InlineSpan, j: number): string => 'pli_' + i.toString() + '_' + j.toString())
-      }.width('100%').margin({ top: 3, bottom: 3 })
-    } else {
-      Row() {
-        ForEach(t.kids, (s: InlineSpan, idx: number) => {
-          if (s.c) {
-            Text(s.t).fontSize(13).fontColor('#7c3aed').fontFamily('monospace')
-              .backgroundColor('#f1f3f4').borderRadius(3).padding({ left: 3, right: 3, top: 1, bottom: 1 })
-          } else if (s.link.length > 0) {
-            Text(s.t).fontSize(13).fontColor(ThemeColors.colorAccentBlue)
-              .decoration({ type: TextDecorationType.Underline, color: ThemeColors.colorAccentBlue })
-          } else if (s.img.length > 0) {
-            Row() {
-              Text('🖼 ').fontSize(12).fontColor(ThemeColors.colorTextTertiary)
-              Text(s.t).fontSize(12).fontColor(ThemeColors.colorTextTertiary).fontStyle(FontStyle.Italic)
-            }
-          } else if (s.b && s.i) {
-            Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextPrimary)
-              .fontWeight(FontWeight.Bold).fontStyle(FontStyle.Italic)
-          } else if (s.b) {
-            Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextPrimary).fontWeight(FontWeight.Bold)
-          } else if (s.i) {
-            Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary).fontStyle(FontStyle.Italic)
-          } else {
-            Text(s.t).fontSize(13).fontColor(ThemeColors.colorTextSecondary)
-          }
-        }, (s: InlineSpan, idx: number): string => 'pis_' + i.toString() + '_' + idx.toString())
-      }.width('100%').padding({ top: 3, bottom: 3 })
-    }
-  }
-
-  @Builder TableContent(t: MarkdownToken) {
-    Column() {
-      if (t.headers.length > 0) {
-        Row() {
-          ForEach(t.headers, (h: InlineSpan) => {
-            Text(h.t).fontSize(12).fontWeight(FontWeight.Bold).fontColor(ThemeColors.colorTextPrimary)
-              .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-              .backgroundColor('#e8eaed').border({ width: 1, color: ThemeColors.colorBorderSubtle }).layoutWeight(1)
-          }, (h: InlineSpan): string => 'th_' + h.t)
-        }.width('100%')
-      }
-      ForEach(t.rows, (row: InlineSpan[], ri: number) => {
-        Row() {
-          ForEach(row, (cell: InlineSpan) => {
-            Text(cell.t).fontSize(12).fontColor(ThemeColors.colorTextSecondary)
-              .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-              .backgroundColor('#fafbfc').border({ width: 1, color: ThemeColors.colorBorderSubtle }).layoutWeight(1)
-          }, (cell: InlineSpan): string => 'tc_' + ri.toString() + '_' + cell.t)
-        }.width('100%')
-      }, (row: InlineSpan[], ri: number): string => 'tr_' + ri.toString())
-    }.width('100%').margin({ top: 6, bottom: 6 })
-    .border({ width: 1, color: ThemeColors.colorBorderSubtle, radius: 6 })
-  }
 
   @Builder BuildOutline() {
     Column() {
