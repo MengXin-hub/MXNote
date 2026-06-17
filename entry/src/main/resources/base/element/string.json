@@ -15,6 +15,10 @@
     {
       "name": "distributed_permission_reason",
       "value": "MXNote uses distributed sync to enable seamless cross-device editing"
+    },
+    {
+      "name": "internet_permission_reason",
+      "value": "MXNote needs network access for previewing remote images and links"
     }
   ]
 }

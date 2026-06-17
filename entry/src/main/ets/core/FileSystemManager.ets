@@ -68,6 +68,7 @@ export class FileSystemManager {
       this.basePath = filesDir
       this.ensureDir(BASE_DIR)
       this.ensureDir(NOTES_DIR)
+      this.ensureDir('mxnote/images')
       return ok(undefined)
     } catch (e) {
       return err(new AppError(ErrorCode.STORAGE_WRITE_FAILED,
@@ -77,6 +78,20 @@ export class FileSystemManager {
 
   getBasePath(): string {
     return this.basePath
+  }
+
+  getImagesDir(): string {
+    return this.basePath + '/mxnote/images'
+  }
+
+  /** 检查图片文件是否存在于沙箱中 */
+  imagePathExists(relativePath: string): boolean {
+    try {
+      fs.statSync(this.basePath + '/' + relativePath)
+      return true
+    } catch (e) {
+      return false
+    }
   }
 
   // ═══════════════════════════════════════════════════════

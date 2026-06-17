@@ -130,7 +130,9 @@
       "Bash(ohpm install *)",
       "Bash(rm entry/src/main/ets/services/MarkdownService.ets 2>/dev/null && echo \"Deleted MarkdownService.ets\" || echo \"Could not delete\")",
       "Bash(rm entry/src/main/ets/pages/components/FormatToolbar.ets entry/src/main/ets/services/ImageInserter.ets entry/src/main/ets/utils/MarkdownUtils.ets)",
-      "Bash(rmdir entry/src/main/ets/utils)"
+      "Bash(rmdir entry/src/main/ets/utils)",
+      "Bash(find /storage/Users/currentUser -path \"*/ets/api/*\" -name \"*.d.ts\" 2>/dev/null | head -5; find /storage/Users/currentUser -path \"*/ets/component/*\" -name \"*.d.ts\" 2>/dev/null | head -5)",
+      "Read(//storage/Users/**)"
     ],
     "additionalDirectories": [
       "\\\\hwfs\\HMOS_文档(默认)\\Code\\MXNote\\entry\\src\\main\\ets\\richeditor",

@@ -11,18 +11,24 @@ import { IconConstants } from '../constants/IconConstants'
 import { FileManager } from '../core/FileManager'
 import { FileSystemManager } from '../core/FileSystemManager'
 import { NoteFile, Folder, formatTime } from '../model/NoteFile'
-import { MarkdownToken, TokenType, InlineSpan } from '../core/MarkdownParser'
+import { MarkdownToken, TokenType } from '../core/MarkdownParser'
 import { Result, AppError } from '../model/Result'
+import { common } from '@kit.AbilityKit'
 import { preferences } from '@kit.ArkData'
 import { MarkdownParser } from '../core/MarkdownParser'
-import { LvMarkdownIn, mdRegister } from '@luvi/lv-markdown-in'
+import { LvMarkdownIn, mdRegister, lvImage, lvText, lvTitle, lvLink, lvCode, lvQuote } from '@luvi/lv-markdown-in'
 import { ExportService } from '../services/ExportService'
 import { ImportService, ImportResult } from '../services/ImportService'
+import { fileIo as fs, picker } from '@kit.CoreFileKit'
 import { TitleBar } from './components/TitleBar'
 import { FileTreePanel } from './components/FileTreePanel'
 import { DlgConfirm, DlgMigrationError } from './components/Dialogs'
 import { SettingsDialog, LoginDialog } from './components/SettingsDialog'
 import { EditorArea } from './components/EditorArea'
+import { DlgInsertLink } from './components/DlgInsertLink'
+import { DlgInsertImage } from './components/DlgInsertImage'
+import { ImageService, ImageCopyResult } from '../services/ImageService'
+import { ImageViewer } from './components/ImageViewer'
 
 // ═══════════════════ 布局可调常量 ═══════════════════
 namespace LAYOUT {
@@ -89,6 +95,17 @@ struct Index {
   @State dlgTitle: string = ''
   @State dlgIsFolder: boolean = false
 
+  // ─────────── 插入链接/图片状态 ───────────
+  @State dlgInsertLink: boolean = false
+  @State dlgInsertImage: boolean = false
+
+  // ─────────── 自定义图片查看器 ───────────
+  @State viewerUrl: string = ''
+  @State showImageViewer: boolean = false
+
+  // ─────────── 实时预览节流 ───────────
+  private renderTimer: number = -1
+
   // ─────────── 迁移状态 ───────────
   @State needMig: boolean = false
   @State migrating: boolean = false
@@ -98,6 +115,7 @@ struct Index {
   private fsm: FileSystemManager | null = null
   private ps: MarkdownParser = new MarkdownParser()
   private isReady: boolean = false
+  private uiCtx: UIContext | undefined = undefined
 
   // ─────────── 拖拽状态 ───────────
   private dragBaseLeft: number = 0
@@ -111,34 +129,142 @@ struct Index {
 
   aboutToAppear(): void {
     const c: UIContext | undefined = this.getUIContext()
+    this.uiCtx = c
     const h: Context | undefined = c ? c.getHostContext() : undefined
     if (h && !this.isReady) {
       this.fm = new FileManager(h)
       this.fsm = this.fm.getFileSystemManager()
       this.isReady = true
 
-      // 注册预览区超链接点击拦截 — 实现笔记内链跳转
+      // ── 注册预览区超链接点击拦截（全部自行处理，不使用库内 WebView）──
       const self: Index = this
       mdRegister.HandleHyperlink = (url: string): boolean => {
-        if (!url || url.length === 0) return true
-        // 外部链接交给浏览器处理
-        if (url.startsWith('http://') || url.startsWith('https://')) return true
-        // 去掉 .md 后缀，尝试按标题匹配笔记文件
-        const target: string = url.endsWith('.md') ? url.slice(0, -3) : url
-        for (let i: number = 0; i < self.files.length; i++) {
-          if (self.files[i].title === target || self.files[i].title === url) {
-            self.openFile(self.files[i].id)
-            return false  // 已拦截
+        if (!url || url.length === 0) return false
+
+        // ① http/https 链接 → 系统默认浏览器打开
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+          try {
+            const ctx: common.UIAbilityContext =
+              self.getUIContext()?.getHostContext() as common.UIAbilityContext
+            if (ctx && ctx.openLink) {
+              ctx.openLink(url)
+            } else {
+              self.showToast('无法打开链接')
+            }
+          } catch (e) {
+            self.showToast('无法打开链接')
+          }
+          return false
+        }
+
+        // ② 尝试笔记内链匹配（按标题或 ID，提取纯文件名）
+        const rawTarget: string = url.startsWith('file://') ? url.slice(7) : url
+        // 从路径中提取笔记名（去掉 .md 和路径前缀）
+        let noteName: string = rawTarget
+        if (noteName.indexOf('/') >= 0) {
+          const segs: string[] = noteName.split('/')
+          noteName = segs[segs.length - 1]
+        }
+        noteName = noteName.endsWith('.md') ? noteName.slice(0, -3) : noteName
+
+        if (noteName.length > 0) {
+          for (let i: number = 0; i < self.files.length; i++) {
+            if (self.files[i].title === noteName || self.files[i].title === rawTarget) {
+              self.openFile(self.files[i].id)
+              return false
+            }
+          }
+          for (let i: number = 0; i < self.files.length; i++) {
+            if (self.files[i].id === noteName) {
+              self.openFile(self.files[i].id)
+              return false
+            }
           }
         }
-        // 未匹配到笔记，尝试按 ID 直接打开
-        for (let i: number = 0; i < self.files.length; i++) {
-          if (self.files[i].id === target) {
-            self.openFile(self.files[i].id)
-            return false
-          }
+
+        // ③ 文件路径处理：解析完整路径
+        let filePath: string = url
+        if (url.startsWith('file://')) {
+          filePath = url.slice(7)
         }
-        return true  // 无匹配，走默认行为
+        // 如果是相对路径，尝试基于沙箱根目录拼接
+        if (!filePath.startsWith('/') && self.fsm) {
+          filePath = self.fsm.getBasePath() + '/' + filePath
+        }
+
+        // ④ .md 文件：读取导入并打开
+        if (filePath.endsWith('.md')) {
+          try {
+            const raw: string = fs.readTextSync(filePath)
+            const segs: string[] = filePath.split('/')
+            const fname: string = segs.length > 0 ? segs[segs.length - 1].replace('.md', '') : '外部笔记'
+            const m: FileManager | null = self.fm
+            if (m) {
+              m.createFile(fname, raw, null).then((r: Result<NoteFile, AppError>) => {
+                if (r.isOk() && r.getValue()) {
+                  self.reloadFiles()
+                  self.openFile(r.getValue()!.id)
+                } else {
+                  self.showToast('无法导入文件')
+                }
+              })
+            }
+          } catch (e) {
+            // 文件不存在，提示用户
+          }
+          return false
+        }
+
+        // ⑤ 图片文件：已在预览中渲染，无需额外操作
+        if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg') ||
+            filePath.endsWith('.png') || filePath.endsWith('.gif') ||
+            filePath.endsWith('.bmp') || filePath.endsWith('.webp')) {
+          return false  // 库内 Image.create 已渲染
+        }
+
+        // ⑥ PDF、文档、其他文件 → 尝试用系统查看器打开
+        if (filePath.endsWith('.pdf') || filePath.endsWith('.doc') ||
+            filePath.endsWith('.docx') || filePath.endsWith('.xls') ||
+            filePath.endsWith('.xlsx') || filePath.endsWith('.ppt') ||
+            filePath.endsWith('.pptx') || filePath.endsWith('.txt') ||
+            filePath.endsWith('.zip') || filePath.endsWith('.rar')) {
+          try {
+            const ctx2: common.UIAbilityContext =
+              self.getUIContext()?.getHostContext() as common.UIAbilityContext
+            if (ctx2 && ctx2.openLink) {
+              const fileUri: string = filePath.startsWith('/') ? 'file://' + filePath : filePath
+              ctx2.openLink(fileUri)
+            }
+          } catch (e) {
+            self.showToast('无法打开文件')
+          }
+          return false
+        }
+
+        // ⑦ 其他无法识别
+        self.showToast('无法识别的链接: ' + url)
+        return false
+      }
+
+      // ── 配置 Markdown 预览样式：从上到下从左到右紧凑排列 ──
+      lvImage.setImgWidth('100%')           // 图片填满预览栏宽
+      lvText.setTextSize(15)                // 正文 15fp
+      lvText.setTextLineHeight('22')          // 行高紧凑
+      lvText.setTextColor('#333333')        // 正文深灰
+      lvLink.setTextSize(15)                // 链接与正文对齐
+      lvLink.setTextColor('#1a73e8')        // 链接色与主题一致
+      lvTitle.setLevelTitleColor('#202124') // 标题统一深色
+      lvCode.setTheme('light')              // 代码块浅色主题
+      lvQuote.setBackgroundColor('#f5f7fa') // 引用块浅灰底
+      lvQuote.setBorderColor('#dadce0')     // 引用块边框与主题一致
+
+      // ── 注册预览区图片点击拦截 → 自定义旋转查看器 ──
+      mdRegister.HandleImage = (url: string): boolean => {
+        if (!url || url.length === 0) return false
+        // 所有图片统一使用自定义 ImageViewer（支持旋转修正横竖）
+        self.viewerUrl = url
+        self.showImageViewer = true
+        return false  // 拦截库默认行为
       }
 
       setTimeout(() => { this.initApp() }, 0)  // 延迟加载让首帧渲染
@@ -299,12 +425,18 @@ struct Index {
     }
   }
 
-  /** TextArea onChange 回调 */
+  /** TextArea onChange 回调 — 实时渲染预览（800ms 节流） */
   onEditorChange(v: string): void {
     if (this.activeTabIdx < 0) return
     this.tabs[this.activeTabIdx].content = v; this.tabs[this.activeTabIdx].dirty = true
-    this.charCount = v.length; this.editorDirty = true; this.previewReady = false
+    this.charCount = v.length; this.editorDirty = true
     this.tabs = this.tabs  // 触发 @State 更新
+
+    // 实时预览：800ms 停顿后自动渲染
+    if (this.rightVisible && this.rightPanel === 'preview') {
+      if (this.renderTimer >= 0) clearTimeout(this.renderTimer)
+      this.renderTimer = setTimeout(() => { this.renderPreview() }, 800)
+    }
   }
 
   /** 保存当前标签 */
@@ -436,6 +568,70 @@ struct Index {
         if (r.isOk() && r.getValue()) { this.reloadFiles(); this.openFile(r.getValue()!.id) }
       })
     })
+  }
+
+  /** 插入链接 Markdown 到编辑器内容末尾 */
+  doInsertLinkMd(md: string): void {
+    if (this.activeTabIdx < 0) { this.dlgInsertLink = false; return }
+    // 直接修改当前标签内容
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    tab.content = tab.content + '\n' + md
+    tab.dirty = true
+    this.charCount = tab.content.length
+    this.editorDirty = true
+    this.tabs = this.tabs
+    this.renderPreview()
+    this.dlgInsertLink = false
+  }
+
+  /** 插入图片 Markdown 到编辑器内容末尾 */
+  doInsertImageMd(md: string): void {
+    if (this.activeTabIdx < 0) { this.dlgInsertImage = false; return }
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    tab.content = tab.content + '\n' + md
+    tab.dirty = true
+    this.charCount = tab.content.length
+    this.editorDirty = true
+    this.tabs = this.tabs
+    this.renderPreview()
+    this.dlgInsertImage = false
+  }
+
+  /** 从相册选择图片并复制到沙箱 */
+  async doPickImageFromGallery(): Promise<void> {
+    try {
+      // 使用 DocumentViewPicker 选择图片文件（兼容 PhotoViewPicker）
+      const opts: picker.DocumentSelectOptions = new picker.DocumentSelectOptions()
+      opts.maxSelectNumber = 1
+      // 注：DocumentViewPicker 不直接支持 MIME 过滤，选择后校验扩展名
+      const uris: string[] = await new picker.DocumentViewPicker().select(opts)
+      if (!uris || uris.length === 0) return
+
+      const uri: string = uris[0]
+      const ctx: Context | undefined = this.getUIContext()?.getHostContext()
+      if (!ctx) {
+        this.showToast('无法获取应用上下文')
+        return
+      }
+
+      // 复制图片到沙箱
+      const result: Result<ImageCopyResult, AppError> =
+        await ImageService.copyImageToSandbox(uri, ctx.filesDir)
+
+      if (result.isOk() && result.getValue()) {
+        const info: ImageCopyResult = result.getValue()!
+        // 提取文件名作为 alt 文字
+        const altName: string = info.fileName.replace(/\.[^.]+$/, '')
+        const md: string = '![' + altName + '](' + info.absolutePath + ')'
+        this.doInsertImageMd(md)
+      } else {
+        this.showToast('图片导入失败')
+        this.dlgInsertImage = false
+      }
+    } catch (e) {
+      this.showToast('图片导入失败')
+      this.dlgInsertImage = false
+    }
   }
 
   // ═══════════════════════════════════════════════════════
@@ -613,7 +809,7 @@ struct Index {
                         this.renameTabId = t.id; this.renameTabText = t.title
                       }
                     }))
-                  }, (t: TabInfo, idx: number): string => 'tab_' + t.id)
+                  }, (t: TabInfo): string => 'tab_' + t.id)
                 }.height(LAYOUT.TAB_H)
               }
               .width('100%')
@@ -643,6 +839,10 @@ struct Index {
                   .onClick(() => { this.saveCurrentTab() })
                 Blank()
                 Text('导出').fontSize(11).fontColor(ThemeColors.colorTextSecondary).onClick(() => { this.doExport() })
+                Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
+                Text('链接').fontSize(11).fontColor(ThemeColors.colorAccentBlue).onClick(() => { this.dlgInsertLink = true })
+                Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
+                Text('图片').fontSize(11).fontColor(ThemeColors.colorAccentBlue).onClick(() => { this.dlgInsertImage = true })
                 Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
                 Text('预览').fontSize(11).fontColor(ThemeColors.colorAccentBlue).onClick(() => { this.saveAndShow('preview') })
                 Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
@@ -726,6 +926,19 @@ struct Index {
           Text('迁移中...').fontSize(13).fontColor(ThemeColors.colorTextSecondary).margin({ top: 10 })
         }.width('100%').height('100%').backgroundColor(ThemeColors.colorBgOverlay).justifyContent(FlexAlign.Center)
       }
+      if (this.dlgInsertLink) {
+        DlgInsertLink({
+          onInsert: (md: string): void => { this.doInsertLinkMd(md) },
+          onCancel: (): void => { this.dlgInsertLink = false }
+        })
+      }
+      if (this.dlgInsertImage) {
+        DlgInsertImage({
+          onInsert: (md: string): void => { this.doInsertImageMd(md) },
+          onPickFromGallery: (): void => { this.doPickImageFromGallery() },
+          onCancel: (): void => { this.dlgInsertImage = false }
+        })
+      }
       if (this.dlgSettings) {
         SettingsDialog({
           fontSize: $fontSize, showLogin: $dlgLogin,
@@ -735,6 +948,14 @@ struct Index {
         })
       }
       if (this.dlgLogin) { LoginDialog({ onClose: (): void => { this.dlgLogin = false } }) }
+
+      // ── 自定义图片查看器（最上层）──
+      if (this.showImageViewer) {
+        ImageViewer({
+          imageUrl: this.viewerUrl,
+          onClose: (): void => { this.showImageViewer = false }
+        })
+      }
     }.width('100%').height('100%')
   }
 
@@ -811,6 +1032,18 @@ struct Index {
   // ═══════════════════════════════════════════════════════
   //  §10 工具函数
   // ═══════════════════════════════════════════════════════
+
+  /** 通过 UIContext 弹出 Toast 提示（API 12+） */
+  private showToast(msg: string): void {
+    try {
+      const pa = this.uiCtx?.getPromptAction()
+      if (pa) {
+        pa.showToast({ message: msg, duration: 2000 })
+      }
+    } catch (e) {
+      // best effort
+    }
+  }
 
   fmtRel(ms: number): string {
     const d: number = Date.now() - ms
