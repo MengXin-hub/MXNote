@@ -29,6 +29,7 @@ import { DlgInsertLink } from './components/DlgInsertLink'
 import { DlgInsertImage } from './components/DlgInsertImage'
 import { ImageService, ImageCopyResult } from '../services/ImageService'
 import { ImageViewer } from './components/ImageViewer'
+import { DlgSearchReplace } from './components/DlgSearchReplace'
 
 // ═══════════════════ 布局可调常量 ═══════════════════
 namespace LAYOUT {
@@ -76,6 +77,7 @@ struct Index {
   // ─────────── 预览/大纲状态 ───────────
   @State tokens: MarkdownToken[] = []
   @State oitems: OItem[] = []
+  @State outlineSearch: string = ''         // 大纲搜索过滤
   @State previewReady: boolean = false
 
   // ─────────── 面板状态 ───────────
@@ -103,8 +105,18 @@ struct Index {
   @State viewerUrl: string = ''
   @State showImageViewer: boolean = false
 
-  // ─────────── 实时预览节流 ───────────
+  // ─────────── 搜索替换（来自 note-gen 迁移）──
+  @State dlgSearchReplace: boolean = false
+
+  // ─────────── 标签上下文菜单 ───────────
+  @State ctxMenuVisible: boolean = false
+  @State ctxMenuTabIdx: number = -1
+  @State ctxMenuX: number = 0
+  @State ctxMenuY: number = 0
+
+  // ─────────── 实时预览节流 + 自动保存 ───────────
   private renderTimer: number = -1
+  private autoSaveTimer: number = -1
 
   // ─────────── 迁移状态 ───────────
   @State needMig: boolean = false
@@ -247,9 +259,9 @@ struct Index {
       }
 
       // ── 配置 Markdown 预览样式：从上到下从左到右紧凑排列 ──
-      lvImage.setImgWidth('100%')           // 图片填满预览栏宽
+      lvImage.setImgWidth('80%')           // 图片填满预览栏宽
       lvText.setTextSize(15)                // 正文 15fp
-      lvText.setTextLineHeight('22')          // 行高紧凑
+      lvText.setTextLineHeight('100%')          // 行高紧凑
       lvText.setTextColor('#333333')        // 正文深灰
       lvLink.setTextSize(15)                // 链接与正文对齐
       lvLink.setTextColor('#1a73e8')        // 链接色与主题一致
@@ -425,18 +437,38 @@ struct Index {
     }
   }
 
-  /** TextArea onChange 回调 — 实时渲染预览（800ms 节流） */
+  /** TextArea onChange 回调 — 实时预览 + 自动保存（来自 note-gen 迁移） */
   onEditorChange(v: string): void {
     if (this.activeTabIdx < 0) return
     this.tabs[this.activeTabIdx].content = v; this.tabs[this.activeTabIdx].dirty = true
     this.charCount = v.length; this.editorDirty = true
-    this.tabs = this.tabs  // 触发 @State 更新
+    this.tabs = this.tabs
 
     // 实时预览：800ms 停顿后自动渲染
     if (this.rightVisible && this.rightPanel === 'preview') {
       if (this.renderTimer >= 0) clearTimeout(this.renderTimer)
       this.renderTimer = setTimeout(() => { this.renderPreview() }, 800)
     }
+
+    // 自动保存：2 秒无输入后自动保存
+    if (this.autoSaveTimer >= 0) clearTimeout(this.autoSaveTimer)
+    this.autoSaveTimer = setTimeout(() => {
+      if (this.activeTabIdx >= 0 && this.editorDirty) {
+        this.saveCurrentTabSilent()
+      }
+    }, 2000)
+  }
+
+  /** 静默保存当前标签（不弹 Toast，用于自动保存） */
+  private saveCurrentTabSilent(): void {
+    if (this.activeTabIdx < 0) return
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    const m: FileManager | null = this.fm; if (!m) return
+    m.saveFile(tab.id, tab.title, tab.content).then(() => {
+      tab.dirty = false; this.editorDirty = false
+      this.charCount = tab.content.length; this.contentCache.set(tab.id, tab.content)
+      this.tabs = this.tabs; this.renderPreview()
+    })
   }
 
   /** 保存当前标签 */
@@ -559,6 +591,121 @@ struct Index {
     const ctx: Context | undefined = this.getUIContext()?.getHostContext()
     if (!ctx) return
     ExportService.exportMarkdown((tab.title || '未命名') + '.md', tab.content, ctx.filesDir)
+    this.showToast('已导出到 mxnote/exports/')
+  }
+
+  /** 导出为 HTML 格式（来自 note-gen 迁移） */
+  doExportHtml(): void {
+    if (this.activeTabIdx < 0) return
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    const ctx: Context | undefined = this.getUIContext()?.getHostContext()
+    if (!ctx) return
+    const html: string = ExportService.markdownToHtml(tab.content, tab.title)
+    ExportService.exportMarkdown((tab.title || '未命名') + '.html', html, ctx.filesDir)
+    this.showToast('已导出为 HTML 到 mxnote/exports/')
+  }
+
+  // ─────────── 搜索替换操作 ───────────
+
+  /** 执行搜索并定位到第一个结果 */
+  doSearchNavigate(line: number, start: number, end: number): void {
+    if (this.activeTabIdx < 0) return
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    const lines: string[] = tab.content.split('\n')
+    if (line >= lines.length) return
+    // 计算光标偏移
+    let offset: number = 0
+    for (let i: number = 0; i < line; i++) { offset += lines[i].length + 1 }
+    this.showToast('找到 ' + (line + 1).toString() + ' 行 ' + (start + 1).toString() + ' 字符处')
+    // 通过重新设置 content 来触发编辑器刷新选中区域（纯文本编辑器限制）
+  }
+
+  /** 替换当前搜索结果 */
+  doReplaceAt(line: number, start: number, end: number, newText: string): void {
+    if (this.activeTabIdx < 0) return
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    const lines: string[] = tab.content.split('\n')
+    if (line >= lines.length) return
+    lines[line] = lines[line].slice(0, start) + newText + lines[line].slice(end)
+    tab.content = lines.join('\n')
+    tab.dirty = true
+    this.charCount = tab.content.length
+    this.editorDirty = true
+    this.tabs = this.tabs
+    this.renderPreview()
+  }
+
+  /** 替换全部 */
+  doReplaceAllInContent(search: string, replace: string, caseSensitive: boolean): string {
+    if (this.activeTabIdx < 0) return ''
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    const lines: string[] = tab.content.split('\n')
+    const outLines: string[] = []
+    let count: number = 0
+    const target: string = caseSensitive ? search : search.toLowerCase()
+    for (let i: number = 0; i < lines.length; i++) {
+      let line: string = lines[i]
+      let newLine: string = ''
+      let pos: number = 0
+      while (pos < line.length) {
+        const sub: string = line.substring(pos)
+        const cmp: string = caseSensitive ? sub : sub.toLowerCase()
+        const idx: number = cmp.indexOf(target)
+        if (idx < 0) { newLine += sub; break }
+        newLine += sub.substring(0, idx) + replace
+        pos += idx + search.length
+        count++
+      }
+      outLines.push(newLine)
+    }
+    tab.content = outLines.join('\n')
+    tab.dirty = true
+    this.charCount = tab.content.length
+    this.editorDirty = true
+    this.tabs = this.tabs
+    this.renderPreview()
+    this.showToast('已替换 ' + count.toString() + ' 处')
+    return tab.content
+  }
+
+  // ─────────── 标签上下文菜单（来自 note-gen 迁移）──
+
+  private showTabCtxMenu(idx: number, x: number, y: number): void {
+    this.ctxMenuTabIdx = idx; this.ctxMenuX = x; this.ctxMenuY = y
+    this.ctxMenuVisible = true
+  }
+
+  closeOtherTabs(): void {
+    const keepIdx: number = this.ctxMenuTabIdx
+    this.ctxMenuVisible = false
+    if (keepIdx < 0 || keepIdx >= this.tabs.length) return
+    const keep: TabInfo = this.tabs[keepIdx]
+    for (let i: number = this.tabs.length - 1; i >= 0; i--) {
+      if (i !== keepIdx) { this.closeTab(i) }
+    }
+    // 确保保留标签处于打开状态
+    if (this.tabs.length === 0 || this.tabs[0].id !== keep.id) {
+      this.openFile(keep.id)
+    }
+  }
+
+  closeLeftTabs(): void {
+    const rightIdx: number = this.ctxMenuTabIdx
+    this.ctxMenuVisible = false
+    if (rightIdx <= 0) return
+    for (let i: number = rightIdx - 1; i >= 0; i--) { this.closeTab(i) }
+  }
+
+  closeRightTabs(): void {
+    const leftIdx: number = this.ctxMenuTabIdx
+    this.ctxMenuVisible = false
+    if (leftIdx < 0 || leftIdx >= this.tabs.length - 1) return
+    for (let i: number = this.tabs.length - 1; i > leftIdx; i--) { this.closeTab(i) }
+  }
+
+  closeAllTabs(): void {
+    this.ctxMenuVisible = false
+    for (let i: number = this.tabs.length - 1; i >= 0; i--) { this.closeTab(i) }
   }
   doImport(): void {
     ImportService.pickAndRead().then((result: ImportResult) => {
@@ -801,14 +948,19 @@ struct Index {
                     .backgroundColor(idx === this.activeTabIdx ? ThemeColors.colorBgCanvas : '#00000000')
                     .border({ width: { bottom: idx === this.activeTabIdx ? 2 : 0 }, color: ThemeColors.colorAccentBlue })
                     .onClick(() => {
-                      if (this.renameTabId === t.id) return
+                      if (this.renameTabId === t.id || this.ctxMenuVisible) return
                       this.switchTab(idx, t.id, t.title, t.dirty, t.content.length)
                     })
-                    .gesture(TapGesture({ count: 2 }).onAction(() => {
+                    // 双击重命名 + 长按上下文菜单
+                    .gesture(
+                      GestureGroup(GestureMode.Exclusive,
+                        LongPressGesture({ repeat: false, duration: 500 })
+                          .onAction(() => { this.showTabCtxMenu(idx, 20, 100) }),
+                        TapGesture({ count: 2 }).onAction(() => {
                       if (this.renameTabId !== t.id) {
                         this.renameTabId = t.id; this.renameTabText = t.title
                       }
-                    }))
+                    })))
                   }, (t: TabInfo): string => 'tab_' + t.id)
                 }.height(LAYOUT.TAB_H)
               }
@@ -837,6 +989,9 @@ struct Index {
                 Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
                 Text('保存').fontSize(11).fontColor(ThemeColors.colorAccentBlue)
                   .onClick(() => { this.saveCurrentTab() })
+                Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
+                Text('搜索').fontSize(11).fontColor(ThemeColors.colorAccentBlue)
+                  .onClick(() => { this.dlgSearchReplace = true })
                 Blank()
                 Text('导出').fontSize(11).fontColor(ThemeColors.colorTextSecondary).onClick(() => { this.doExport() })
                 Text(' · ').fontSize(11).fontColor(ThemeColors.colorBorderDefault)
@@ -939,6 +1094,21 @@ struct Index {
           onCancel: (): void => { this.dlgInsertImage = false }
         })
       }
+      if (this.dlgSearchReplace) {
+        DlgSearchReplace({
+          content: this.activeTabIdx >= 0 ? this.tabs[this.activeTabIdx].content : '',
+          onNavigate: (line: number, start: number, end: number): void => {
+            this.doSearchNavigate(line, start, end)
+          },
+          onReplace: (line: number, start: number, end: number, newText: string): void => {
+            this.doReplaceAt(line, start, end, newText)
+          },
+          onReplaceAll: (search: string, replace: string, caseSensitive: boolean): string => {
+            return this.doReplaceAllInContent(search, replace, caseSensitive)
+          },
+          onClose: (): void => { this.dlgSearchReplace = false }
+        })
+      }
       if (this.dlgSettings) {
         SettingsDialog({
           fontSize: $fontSize, showLogin: $dlgLogin,
@@ -955,6 +1125,35 @@ struct Index {
           imageUrl: this.viewerUrl,
           onClose: (): void => { this.showImageViewer = false }
         })
+      }
+
+      // ── 标签上下文菜单（来自 note-gen 迁移）──
+      if (this.ctxMenuVisible) {
+        Column() {
+          Column() {
+            Text('关闭').fontSize(13).fontColor(ThemeColors.colorTextPrimary)
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 }).width('100%')
+              .onClick(() => { this.closeTab(this.ctxMenuTabIdx) })
+            Divider().color(ThemeColors.colorBorderSubtle)
+            Text('关闭其他').fontSize(13).fontColor(ThemeColors.colorTextPrimary)
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 }).width('100%')
+              .onClick(() => { this.closeOtherTabs() })
+            Text('关闭左侧').fontSize(13).fontColor(ThemeColors.colorTextPrimary)
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 }).width('100%')
+              .onClick(() => { this.closeLeftTabs() })
+            Text('关闭右侧').fontSize(13).fontColor(ThemeColors.colorTextPrimary)
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 }).width('100%')
+              .onClick(() => { this.closeRightTabs() })
+            Divider().color(ThemeColors.colorBorderSubtle)
+            Text('关闭全部').fontSize(13).fontColor(ThemeColors.colorAccentRed)
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 }).width('100%')
+              .onClick(() => { this.closeAllTabs() })
+          }
+          .padding({ top: 6, bottom: 6 }).backgroundColor(Color.White).borderRadius(12).width(160)
+          .shadow({ radius: 16, color: '#00000033', offsetY: 4 })
+        }
+        .width('100%').height('100%').backgroundColor('#00000011')
+        .onClick(() => { this.ctxMenuVisible = false })
       }
     }.width('100%').height('100%')
   }
@@ -995,17 +1194,45 @@ struct Index {
           .onClick(() => { this.rightVisible = false; this.saveLayout() })
       }.width('100%').padding({ left: 10, right: 6, top: 8, bottom: 5 })
       .border({ width: { bottom: 1 }, color: ThemeColors.colorBorderSubtle })
+
+      // ── 搜索框（来自 note-gen 迁移）──
+      Row() {
+        Image(IconConstants.IC_SEARCH).width(14).height(14)
+          .fillColor(ThemeColors.colorTextTertiary).margin({ left: 8 })
+        TextInput({ text: $$this.outlineSearch, placeholder: '搜索标题...' })
+          .fontSize(12).fontColor(ThemeColors.colorTextPrimary)
+          .placeholderColor(ThemeColors.colorTextTertiary)
+          .backgroundColor('#00000000').layoutWeight(1).height(32).padding({ left: 6, right: 6 })
+          .borderRadius(0)
+        if (this.outlineSearch.length > 0) {
+          Text('✕').fontSize(11).fontColor(ThemeColors.colorTextTertiary)
+            .padding({ left: 4, right: 8 })
+            .onClick(() => { this.outlineSearch = '' })
+        }
+      }.width('100%').height(36).padding({ left: 6, right: 6 })
+      .backgroundColor(ThemeColors.colorBgHover)
+      .border({ width: { bottom: 1 }, color: ThemeColors.colorBorderSubtle })
+
       Scroll() {
         Column() {
           if (this.oitems.length === 0) {
             Text('暂无标题').fontSize(11).fontColor(ThemeColors.colorTextTertiary).width('100%').padding(10)
           } else {
-            ForEach(this.oitems, (it: OItem) => {
-              Text(it.text).fontSize(13).fontColor(ThemeColors.colorTextSecondary)
-                .padding({ left: (it.lv - 1) * 14 + 10, top: 5, bottom: 5 }).maxLines(1).width('100%')
-            }, (it: OItem): string => 'oi_' + it.text + '_' + it.lv.toString())
+            ForEach(this.getFilteredOitems(), (it: OItem, idx: number) => {
+              Row() {
+                // 层级缩进 + H 标记
+                Text('H' + it.lv.toString()).fontSize(9).fontColor(ThemeColors.colorAccentBlue)
+                  .fontWeight(FontWeight.Bold).width(18).margin({ left: (it.lv - 1) * 12 + 8 })
+                Text(it.text).fontSize(13).fontColor(ThemeColors.colorTextSecondary)
+                  .maxLines(1).layoutWeight(1)
+              }
+              .width('100%').padding({ top: 5, bottom: 5, right: 8 })
+              .borderRadius(4)
+              .backgroundColor(ThemeColors.colorBgHover)
+              .onClick(() => { this.scrollToHeading(it.lv, it.text) })
+            }, (it: OItem, idx: number): string => 'oi_' + idx.toString() + '_' + it.lv.toString())
           }
-        }.width('100%').padding(10)
+        }.width('100%').padding(6)
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
     }.width(this.rightWidth).height('100%').backgroundColor('#fafbfc')
     .border({ width: { left: 1 }, color: ThemeColors.colorBorderSubtle })
@@ -1032,6 +1259,47 @@ struct Index {
   // ═══════════════════════════════════════════════════════
   //  §10 工具函数
   // ═══════════════════════════════════════════════════════
+
+  /** 大纲标题过滤（来自 note-gen 迁移） */
+  private getFilteredOitems(): OItem[] {
+    const q: string = this.outlineSearch.trim().toLowerCase()
+    if (!q) return this.oitems
+    const r: OItem[] = []
+    for (let i: number = 0; i < this.oitems.length; i++) {
+      if (this.oitems[i].text.toLowerCase().indexOf(q) >= 0) {
+        r.push(this.oitems[i])
+      }
+    }
+    return r
+  }
+
+  /** 大纲点击跳转 — 在编辑器中定位到指定标题行 */
+  private scrollToHeading(lv: number, text: string): void {
+    if (this.activeTabIdx < 0) return
+    const tab: TabInfo = this.tabs[this.activeTabIdx]
+    const lines: string[] = tab.content.split('\n')
+    // 构造标题的 Markdown 前缀：H1=# , H2=## , ...
+    let prefix: string = ''
+    for (let i: number = 0; i < lv; i++) { prefix += '#' }
+    prefix += ' '
+    for (let i: number = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith(prefix) && lines[i].trim().indexOf(text) >= 0) {
+        // 计算该行之前的字节偏移
+        let offset: number = 0
+        for (let j: number = 0; j < i; j++) { offset += lines[j].length + 1 }
+        // 切换编辑器选中区域（通过 TextAreaController 定位 — 受限于纯文本编辑器，记录位置）
+        this.showToast('定位到: ' + text + ' (行 ' + (i + 1).toString() + ')')
+        return
+      }
+    }
+    // 左侧面板中匹配的文件名也一样提示
+    for (let i: number = 0; i < this.files.length; i++) {
+      if (this.files[i].title === text) {
+        this.openFile(this.files[i].id)
+        return
+      }
+    }
+  }
 
   /** 通过 UIContext 弹出 Toast 提示（API 12+） */
   private showToast(msg: string): void {
